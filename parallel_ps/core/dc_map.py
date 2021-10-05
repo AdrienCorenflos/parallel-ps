@@ -22,15 +22,14 @@
 
 import math
 from functools import partial
-from typing import TypeVar, Union, NamedTuple, Tuple, List, Dict, Callable
+from typing import List, Callable
 
 import jax.numpy as jnp
 import jax.ops
 from jax import vmap, lax
 
+from parallel_ps.base import PyTree
 from parallel_ps.core.pmap_util import pmap
-
-PyTree = TypeVar("PyTree", bound=Union[jnp.ndarray, NamedTuple, Tuple, List, Dict])
 
 _EPS = 0.1  # this is a small float to make sure that log2(2**k) = k exactly
 

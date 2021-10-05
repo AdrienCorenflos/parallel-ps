@@ -6,6 +6,8 @@ The changelog is as follows:
 1. Use check for PRNGKey
 2. Allow for different inner resamplers in residual.
 
+This will completely be removed in favour of a simple import when BlackJAX is released as a package.
+
 Copyright 2020 The Blackjax developers
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,15 +21,18 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
 """
 
 from functools import partial
 from typing import Callable
 
+import chex
 import jax
 import jax.numpy as jnp
 from chex import PRNGKey
+
+
+RESAMPLING_SIGNATURE = Callable[[jnp.ndarray, chex.PRNGKey, int], jnp.ndarray]
 
 
 def _resampling_func(func, name, desc="", additional_params="") -> Callable:
@@ -70,6 +75,7 @@ def stratified(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int) -> jnp.nd
          "and should only be used for illustration purposes, "
          "or if your algorithm *REALLY* needs independent samples.",
 )
+@partial(jax.jit, static_argnums=(2,), donate_argnums=(0, 1))
 def multinomial(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int) -> jnp.ndarray:
     # In practice we don't have to sort the generated uniforms, but searchsorted works faster and is more stable
     # if both inputs are sorted, so we use the _sorted_uniforms from N. Chopin, but still use searchsorted instead of
@@ -83,6 +89,7 @@ def multinomial(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int) -> jnp.n
 
 
 @partial(_resampling_func, name="Residual")
+@partial(jax.jit, static_argnums=(2, 3), donate_argnums=(0, 1))
 def residual(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int,
              inner_resampling: Callable = multinomial) -> jnp.ndarray:
     # This code is adapted from nchopin/particles library, but made to be compatible with JAX static shape jitting that
@@ -116,6 +123,7 @@ def residual(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int,
     return idx
 
 
+@partial(jax.jit, static_argnums=(2, 3), donate_argnums=(0, 1))
 def _systematic_or_stratified(
         weights: jnp.ndarray, rng_key: PRNGKey, n_sampled: int, is_systematic: bool
 ) -> jnp.ndarray:
@@ -130,6 +138,7 @@ def _systematic_or_stratified(
     return jnp.clip(idx, 0, n - 1)
 
 
+@partial(jax.jit, static_argnums=(0,))
 def _sorted_uniforms(n, rng_key: PRNGKey) -> jnp.ndarray:
     # Credit goes to Nicolas Chopin
     us = jax.random.uniform(rng_key, (n + 1,))
