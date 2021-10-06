@@ -19,12 +19,14 @@
 #  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
-from abc import ABC
+from functools import partial
 from typing import NamedTuple, TypeVar, Union, Tuple, List, Dict
 
 import chex
+import jax
 import jax.numpy as jnp
-from jax import numpy as jnp
+from jax import numpy as jnp, tree_unflatten, tree_flatten
+from jax.scipy.special import logsumexp
 
 PyTree = TypeVar("PyTree", bound=Union[jnp.ndarray, NamedTuple, Tuple, List, Dict])
 
@@ -38,19 +40,17 @@ def normalize(log_weights: jnp.ndarray) -> jnp.ndarray:
     ----------
     log_weights: jnp.ndarray
         The unnormalised log-weights
+
     Returns
     -------
     weights: jnp.array
         The resulting normalised weights
     """
 
-    max_logw = jnp.max(log_weights)
-    logw = log_weights - max_logw
+    logw = log_weights - logsumexp(log_weights)
 
     w = jnp.exp(logw)
-    s = jnp.sum(w)
-
-    return w / s
+    return w
 
 
 def ess(weights: jnp.ndarray) -> float:
@@ -91,6 +91,33 @@ class DSMCState(NamedTuple):
     origins: jnp.ndarray
 
 
+@partial(jax.jit, static_argnums=(1,))
+def split_batched_and_static_params(parameters, batched):
+    chex.assert_trees_all_equal_structs(parameters, batched)
+
+    flat_params, tree_def = tree_flatten(parameters)
+    flat_batched, _ = tree_flatten(batched)
+    flat_batched_params, flat_static_params = zip(*[(p, None) if b else (None, p)
+                                                    for p, b in zip(flat_params, flat_batched)])
+
+    batched_params = tree_unflatten(tree_def, flat_batched_params)
+    static_params = tree_unflatten(tree_def, flat_static_params)
+    return batched_params, static_params
+
+
+@partial(jax.jit, static_argnums=(2,))
+def rejoin_batched_and_static_params(batched_params, static_params, batched):
+    flat_batched, _ = tree_flatten(batched)
+
+    # By default jax tree_flatten discards the None, so we need to prevent it
+    # from doing so by say that the None is indeed a leaf.
+    flat_batched_params, tree_def = tree_flatten(batched_params, is_leaf=lambda z: z is None)
+    flat_static_params, _ = tree_flatten(static_params, is_leaf=lambda z: z is None)
+
+    flat_params = [p1 if b else p2 for (p1, p2, b) in zip(flat_batched_params, flat_static_params, flat_batched)]
+    return tree_unflatten(tree_def, flat_params)
+
+
 class UnivariatePotentialModel(NamedTuple):
     r"""
     Univariate potential model. For example this can represent x -> log(p(y|x)) or a given density, in which case the
@@ -101,29 +128,23 @@ class UnivariatePotentialModel(NamedTuple):
     ----------
     parameters: PyTree
         The parameters of the potential model for each time step.
-    batched: bool
+    batched: PyTree
         Are the parameters batched along the first dimension (where each index corresponds to a time step) or is
-        parameters constant over all time steps
-    T: bool, optional
-        Number of time steps to sample from. If batched is False, then this must be given.
-        Otherwise, it will be overriden by the size of the first dimension in parameters leaves.
+        parameters constant over all time steps. The tree structure is the same as parameters.
     """
     parameters: PyTree
-    batched: bool
-    T: int = None
+    batched: PyTree
 
     @classmethod
-    def log_potential(cls, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+    def log_potential(cls, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         """
-        This computes the log-potential of a given set of particles (for a given time step)
-        under the proposal model. A typical way to implement it would be to create an elementwise method
-        `log_potential_one` and simply vmap it, but one could also implement the batching rules manually
-         if there was a smarter way to do it.
+        This computes the log-potential of a given particle (for a given time step)
+        under the proposal model. This will be vmapped.
 
         Parameters
         ----------
-        particles: chex.ArrayTree
-            Current particles to be evaluated
+        particle: chex.ArrayTree
+            Current particle to be evaluated
         parameter: PyTree
             The parameter of the proposal distribution at the current time step.
 
@@ -135,7 +156,7 @@ class UnivariatePotentialModel(NamedTuple):
         raise NotImplementedError
 
 
-class DensityModel(UnivariatePotentialModel):
+class DensityModel(NamedTuple):
     """
     Same as the univariate potential model, but can also sample from the model. In practice this should be reserved to
     :math:`q_t` even if the potential model comes from a density in the first place (coding best practices).
@@ -144,8 +165,35 @@ class DensityModel(UnivariatePotentialModel):
     ----------
     parameters: PyTree
         The parameters of the proposal distribution for each time step.
-
+    batched: PyTree
+        Are the parameters batched along the first dimension (where each index corresponds to a time step) or is
+        parameters constant over all time steps. The tree structure is the same as parameters.
+    T: int
+        Number of time steps sampled from.
     """
+    parameters: PyTree
+    batched: PyTree
+    T: int
+
+    @classmethod
+    def log_potential(cls, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+        """
+        This computes the log-potential of a given set of particles (for a given time step)
+        under the proposal model. This will be vmapped
+
+        Parameters
+        ----------
+        particle: chex.ArrayTree
+            Current particles to be evaluated
+        parameter: PyTree
+            The parameter of the proposal distribution at the current time step.
+
+        Returns
+        -------
+        res: jnp.ndarray
+            Resulting log-potentials of the samples in the model
+        """
+        raise NotImplementedError
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         """
@@ -178,20 +226,56 @@ class BivariatePotentialModel(NamedTuple):
     ----------
     parameters: PyTree
         The parameters of the potential model for each time step.
-    batched: bool
+    batched: PyTree
         Are the parameters batched along the first dimension (where each index corresponds to a time step) or is
-        parameters constant over all time steps
+        parameters constant over all time steps. The tree structure is the same as parameters.
     """
     parameters: PyTree
-    batched: bool
+    batched: PyTree
 
     @classmethod
     def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         """
         This computes the unnormalised log-potential of a given pair of particles (for a given time step)
-        under the model. A typical way to implement it would be to create an elementwise method
-        `self.log_potential_one` and simply vmap it, but one could also implement the batching rules manually
-         if there was a smarter way to do it.
+        under the model. This will be vmapped.
+
+        Parameters
+        ----------
+        x_t_1: chex.ArrayTree
+            Particle at time t-1
+        x_t: chex.ArrayTree
+            Particle at time t
+        parameter: PyTree
+            The parameter of the proposal distribution at time t.
+
+        Returns
+        -------
+        res: jnp.ndarray
+            Resulting log-potentials of the samples in the model
+        """
+        raise NotImplementedError
+
+
+class ConditionalDensityModel(NamedTuple):
+    r"""
+    Conditional Density Model, same as BivariatePotentialModel with additional sampling utility.
+
+    Parameters
+    ----------
+    parameters: PyTree
+        The parameters of the potential model for each time step. Note that it corresponds to the time step for `t`.
+    batched: PyTree
+            Are the parameters batched along the first dimension (where each index corresponds to a time step) or is
+            parameters constant over all time steps. The tree structure is the same as parameters.
+    """
+    parameters: PyTree
+    batched: PyTree
+
+    @classmethod
+    def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+        """
+        This computes the unnormalised log-potential of a given pair of particles (for a given time step)
+        under the model. This will be vmapped.
 
         Parameters
         ----------
@@ -208,19 +292,6 @@ class BivariatePotentialModel(NamedTuple):
             Resulting log-potentials of the samples in the model
         """
         raise NotImplementedError
-
-
-class ConditionalDensityModel(BivariatePotentialModel, ABC):
-    r"""
-    Conditional Density Model, same as BivariatePotentialModel with additional sampling utility.
-
-    Parameters
-    ----------
-    parameters: PyTree
-        The parameters of the potential model for each time step. Note that it corresponds to the time step for $t$.
-
-    """
-    parameters: PyTree
 
     @classmethod
     def sample(cls, key: chex.PRNGKey, x_t_1: chex.ArrayTree, parameter: PyTree) -> chex.ArrayTree:

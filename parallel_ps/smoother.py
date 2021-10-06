@@ -31,7 +31,8 @@ import jax.ops as ops
 from jax.random import split
 from jax.scipy.special import logsumexp
 
-from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, PyTree, DSMCState
+from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, PyTree, DSMCState, \
+    split_batched_and_static_params, rejoin_batched_and_static_params
 from parallel_ps.core import dc_vmap
 from parallel_ps.core.resampling import RESAMPLING_SIGNATURE
 from parallel_ps.operator import operator
@@ -49,7 +50,7 @@ def smoothing(key: chex.PRNGKey, proposal_model: DensityModel, weighting_model: 
     trajectories = proposal_model.sample(init_key, N)
 
     # Get the total number of time steps. Bit complicated, but cheep, so...
-    T = jax.tree_flatten(trajectories)[0][0].shape[0]
+    T = proposal_model.T
 
     # If conditional trajectory is not None, then update the first simulation index of all the time steps.
     if conditional_trajectory is not None:
@@ -63,7 +64,7 @@ def smoothing(key: chex.PRNGKey, proposal_model: DensityModel, weighting_model: 
 
     first_log_weights = _compute_first_log_weights(first_time_step, initial_model, proposal_model,
                                                    initial_potential_model)
-    rest_log_weights = _compute_generic_log_weights(rest_time_steps, weighting_model, proposal_model)
+    rest_log_weights = _compute_generic_log_weights(rest_time_steps, weighting_model, proposal_model, T)
     log_weights = jnp.concatenate([jnp.expand_dims(first_log_weights, 0), rest_log_weights])
     # Compute the initial log-likelihood as a log mean exp operation.
     ells = logsumexp(log_weights, 1) - math.log(N)
@@ -71,7 +72,8 @@ def smoothing(key: chex.PRNGKey, proposal_model: DensityModel, weighting_model: 
     # Get the log_weights and required batched input to it.
     log_weight_function, params_dict = _make_log_weight_fn_and_params_inputs(weighting_model,
                                                                              transition_model,
-                                                                             potential_model)
+                                                                             potential_model,
+                                                                             T)
 
     # Create inputs
     combination_keys = split(key, T)
@@ -91,58 +93,87 @@ def smoothing(key: chex.PRNGKey, proposal_model: DensityModel, weighting_model: 
 
 def _make_log_weight_fn_and_params_inputs(weighting_model: UnivariatePotentialModel,
                                           transition_model: BivariatePotentialModel,
-                                          potential_model: BivariatePotentialModel):
+                                          potential_model: BivariatePotentialModel,
+                                          T: int):
     # The way we build this function is so that if the parameters are static for the model we don't duplicate them to
     # be passed to the divide and conquer map.
 
-    @jax.vmap
-    def log_weight_function(x_t_1, x_t, params_t):
-        weighting_params = params_t.get("weighting_params", weighting_model.parameters)
-        transition_params = params_t.get("transition_params", transition_model.parameters)
-        potential_params = params_t.get("potential_params", potential_model.parameters)
+    batched_weighting_params, static_weighting_params = split_batched_and_static_params(weighting_model.parameters,
+                                                                                        weighting_model.batched)
+    batched_transition_params, static_transition_params = split_batched_and_static_params(transition_model.parameters,
+                                                                                          transition_model.batched)
+    batched_potential_params, static_potential_params = split_batched_and_static_params(potential_model.parameters,
+                                                                                        potential_model.batched)
 
-        weighting_log_weight = weighting_model.log_potential(x_t, weighting_params)
-        transition_log_weight = transition_model.log_potential(x_t_1, x_t, transition_params)
-        potential_log_weight = potential_model.log_potential(x_t_1, x_t, potential_params)
+    # We pad as the first index is not used but the shapes need to be consistent.
+    def _pad_params(batch_param):
+        ndim = batch_param.ndim
+        t = batch_param.shape[0]
+        return jnp.pad(batch_param, [(T - t, 0)] + [(0, 0)] * (ndim - 1), constant_values=0)
+
+    batched_weighting_params = jax.tree_map(_pad_params, batched_weighting_params)
+    batched_transition_params = jax.tree_map(_pad_params, batched_transition_params)
+    batched_potential_params = jax.tree_map(_pad_params, batched_potential_params)
+
+    @jax.jit
+    def log_weight_function(x_t_1, x_t, params_t):
+        weighting_params_t, transition_params_t, potential_params_t = params_t
+        weighting_params_t = rejoin_batched_and_static_params(weighting_params_t, static_weighting_params,
+                                                              weighting_model.batched)
+        transition_params_t = rejoin_batched_and_static_params(transition_params_t, static_transition_params,
+                                                               transition_model.batched)
+        potential_params_t = rejoin_batched_and_static_params(potential_params_t, static_potential_params,
+                                                              potential_model.batched)
+
+        weighting_log_weight = weighting_model.log_potential(x_t, weighting_params_t)
+        transition_log_weight = transition_model.log_potential(x_t_1, x_t, transition_params_t)
+        potential_log_weight = potential_model.log_potential(x_t_1, x_t, potential_params_t)
 
         return potential_log_weight + transition_log_weight - weighting_log_weight
 
-    params_dict = {}
-    if weighting_model.batched:
-        params_dict["weighting_params"] = jax.tree_map(lambda z: z[1:], weighting_model.parameters)
-    if weighting_model.batched:
-        params_dict["transition_params"] = jax.tree_map(lambda z: z[1:], transition_model.parameters)
-    if weighting_model.batched:
-        params_dict["potential_params"] = jax.tree_map(lambda z: z[1:], potential_model.parameters)
+    params = batched_weighting_params, batched_transition_params, batched_potential_params
 
-    return log_weight_function, params_dict
+    return log_weight_function, params
 
 
 def _compute_first_log_weights(particles, initial_model, proposal_model, initial_potential_model):
-    log_weights = initial_model.log_potential(particles, initial_model.parameters)
-    log_weights = log_weights + initial_potential_model.log_potential(particles, initial_potential_model.parameters)
-    if proposal_model.batched:
-        proposal_parameters = jax.tree_map(lambda z: z[0], proposal_model.parameters)
-    else:
-        proposal_parameters = proposal_model.parameters
+    initial_model_potential = jax.vmap(initial_model.log_potential, in_axes=[0, None])
+    potential_model_potential = jax.vmap(initial_potential_model.log_potential, in_axes=[0, None])
+    proposal_model_potential = jax.vmap(proposal_model.log_potential, in_axes=[0, None])
 
-    return log_weights - proposal_model.log_potential(particles, proposal_parameters)
+    log_weights = initial_model_potential(particles, initial_model.parameters)
+    log_weights = log_weights + potential_model_potential(particles, initial_potential_model.parameters)
+
+    proposal_parameters = jax.tree_map(lambda z, b: z[0] if b else z,
+                                       proposal_model.parameters,
+                                       proposal_model.batched)
+
+    return log_weights - proposal_model_potential(particles, proposal_parameters)
 
 
-def _compute_generic_log_weights(particles, weighting_model, proposal_model):
-    # Compute the log weights corresponding to the weighting model first
-    if weighting_model.batched:
-        weighting_parameters = jax.tree_map(lambda z: z[1:], weighting_model.parameters)
-        weighting_log_weights = jax.vmap(weighting_model.log_potential)(particles, weighting_parameters)
-    else:
-        weighting_log_weights = jax.vmap(weighting_model.log_potential, in_axes=[0, None])(particles,
-                                                                                           weighting_model.parameters)
-    # Then compute the log weights corresponding to the proposal model
-    if proposal_model.batched:
-        proposal_parameters = jax.tree_map(lambda z: z[1:], proposal_model.parameters)
-        proposal_log_weights = jax.vmap(proposal_model.log_potential)(particles, proposal_parameters)
-    else:
-        proposal_log_weights = jax.vmap(proposal_model.log_potential, in_axes=[0, None])(particles,
-                                                                                         proposal_model.parameters)
+def _compute_generic_log_weights(particles, weighting_model, proposal_model, T):
+    # Compute the log weights corresponding to the weighting model first.
+    # Very similar in effect to _make_log_weight_fn_and_params_inputs
 
-    return weighting_log_weights - proposal_log_weights
+    batched_weighting_params, static_weighting_params = split_batched_and_static_params(weighting_model.parameters,
+                                                                                        weighting_model.batched)
+    batched_proposal_params, static_proposal_params = split_batched_and_static_params(proposal_model.parameters,
+                                                                                      proposal_model.batched)
+
+    batched_weighting_params = jax.tree_map(lambda z: z[1:] if z.shape[0] == T else z, batched_weighting_params)
+    batched_proposal_params = jax.tree_map(lambda z: z[1:], batched_proposal_params)
+
+    @jax.vmap
+    def log_weight_function(x_t, params_t):
+        weighting_params_t, proposal_params_t = params_t
+        weighting_params_t = rejoin_batched_and_static_params(weighting_params_t, static_weighting_params,
+                                                              weighting_model.batched)
+        proposal_params_t = rejoin_batched_and_static_params(proposal_params_t, static_proposal_params,
+                                                             proposal_model.batched)
+
+        weighting_log_weight = jax.vmap(weighting_model.log_potential, in_axes=[0, None])(x_t, weighting_params_t)
+        proposal_log_weight = jax.vmap(proposal_model.log_potential, in_axes=[0, None])(x_t, proposal_params_t)
+
+        return weighting_log_weight - proposal_log_weight
+
+    return log_weight_function(particles, (batched_weighting_params, batched_proposal_params))

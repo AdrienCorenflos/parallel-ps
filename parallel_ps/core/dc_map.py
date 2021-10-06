@@ -86,9 +86,10 @@ def _dc_map(elems, operator, map_fn):
     is worth the readability trade-off to me. If anyone is ever interested I would be more than happy to discuss the
     details, but for the time being I will essentially consider this implementation to be better.
     """
+    flat_tree, _ = jax.tree_flatten(elems)
     shapes = jax.tree_map(jnp.shape, elems)
 
-    T = shapes[0][0]
+    T = flat_tree[0].shape[0]
     pow_2 = _next_power_of_2(T)
     K = int(math.log2(pow_2 + _EPS))
 
@@ -113,7 +114,7 @@ def _dc_map(elems, operator, map_fn):
 
         padded_elems = combine(even_elems, even_flags, odd_elems, odd_flags)
 
-    return jax.tree_map(lambda z, shape: z.reshape(shape)[:T], padded_elems, shapes)
+    return jax.tree_map(lambda z, shape: z[0, :T, ...].reshape(shape), padded_elems, shapes)
 
 
 def _next_power_of_2(n):
