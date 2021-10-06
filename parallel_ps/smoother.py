@@ -20,119 +20,129 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
+import math
 from functools import partial
-from typing import Callable
+from typing import Callable, Optional
 
 import chex
+import jax
 import jax.numpy as jnp
-from jax import jit, tree_flatten, tree_unflatten, vmap
+import jax.ops as ops
 from jax.random import split
+from jax.scipy.special import logsumexp
+
+from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, PyTree, DSMCState
+from parallel_ps.core import dc_vmap
+from parallel_ps.core.resampling import RESAMPLING_SIGNATURE
+from parallel_ps.operator import operator
 
 
-def _common():
-    pass
-
-
-
-def _initialize(key: chex.PRNGKey, q_t):
-
-
-    pass
-
-
-def generic_smoother(key, qt: Callable, log_qt: Callable, log_nut: Callable, log_Mt: Callable, log_Gt: Callable,
-                     log_G0: Callable, log_M0: Callable, T, operator, qt_params, nut_params, Mt_params,
-                     Gt_params, N=100, return_intermediary=False, operator_has_auxiliary_outputs=False,
-                     passthrough_operator=None):
+def smoothing(key: chex.PRNGKey, proposal_model: DensityModel, weighting_model: UnivariatePotentialModel,
+              transition_model: BivariatePotentialModel, potential_model: BivariatePotentialModel,
+              initial_model: UnivariatePotentialModel, initial_potential_model: UnivariatePotentialModel,
+              resampling_method: RESAMPLING_SIGNATURE,
+              N: int = 100, conditional_trajectory: Optional[PyTree] = None,
+              dc_map: callable = dc_vmap):
     key, init_key = split(key, 2)
-    init_keys = split(init_key, T)
-    qt = vmap(qt, in_axes=[0, None, 0])
 
-    init_particles = qt(init_keys, N, qt_params)
-    init_ells = jnp.zeros((T,))
+    # Sample initial trajectories
+    trajectories = proposal_model.sample(init_key, N)
 
-    init_log_qt = vmap(log_qt, in_axes=[0, 0])(init_particles, qt_params)  # vmapped across time
+    # Get the total number of time steps. Bit complicated, but cheep, so...
+    T = jax.tree_flatten(trajectories)[0][0].shape[0]
 
-    logw0 = vmap(log_G0)(init_particles[0]) + vmap(log_M0)(init_particles[0]) - init_log_qt[0]
-    ell_0, _ = normalize(logw0)
+    # If conditional trajectory is not None, then update the first simulation index of all the time steps.
+    if conditional_trajectory is not None:
+        trajectories = jax.tree_map(lambda xs, x: ops.index_update(xs, ops.index[:, 0], x),
+                                    trajectories,
+                                    conditional_trajectory)
 
-    flat_nut_params, nut_tree_def = tree_flatten(nut_params)
-    init_log_nut = vmap(log_nut, in_axes=[0, 0])(init_particles[1:],
-                                                 tree_unflatten(nut_tree_def, [par[1:] for par in
-                                                                               flat_nut_params]))  # vmapped across time
-    log_weights = jnp.concatenate([jnp.expand_dims(logw0, 0), init_log_nut - init_log_qt[1:]])
-    # init_ells = jnp.concatenate([jnp.reshape(ell_0, (1,)), init_ells[1:]])
-    if T == 1:
-        return init_ells, init_particles
+    # Compute the log weights for each time steps
+    first_time_step = jax.tree_map(lambda z: z[0], trajectories)
+    rest_time_steps = jax.tree_map(lambda z: z[1:], trajectories)
 
+    first_log_weights = _compute_first_log_weights(first_time_step, initial_model, proposal_model,
+                                                   initial_potential_model)
+    rest_log_weights = _compute_generic_log_weights(rest_time_steps, weighting_model, proposal_model)
+    log_weights = jnp.concatenate([jnp.expand_dims(first_log_weights, 0), rest_log_weights])
+    # Compute the initial log-likelihood as a log mean exp operation.
+    ells = logsumexp(log_weights, 1) - math.log(N)
+
+    # Get the log_weights and required batched input to it.
+    log_weight_function, params_dict = _make_log_weight_fn_and_params_inputs(weighting_model,
+                                                                             transition_model,
+                                                                             potential_model)
+
+    # Create inputs
     combination_keys = split(key, T)
+    origins = jnp.repeat(jnp.arange(0, N)[None, :], T, axis=0)
+    dsmc_state = DSMCState(trajectories, log_weights, ells, origins)
+    inputs = dsmc_state, combination_keys, params_dict
 
-    elems = combination_keys, init_particles, log_weights, init_ells, (nut_params, Mt_params, Gt_params)
+    # Get the right operator
+    combination_operator: Callable = partial(operator,
+                                             log_weight_fn=log_weight_function,
+                                             resampling_method=resampling_method,
+                                             conditional=conditional_trajectory is not None)
 
-    def logwt_fn(x_t, x_t_1, params_t):
-        log_Gt_weight = log_Gt(x_t, x_t_1, params_t[2])
-        log_Mt_weight = log_Mt(x_t, x_t_1, params_t[1])
-        log_nut_weight = log_nut(x_t, params_t[0])
-        return log_Gt_weight + log_Mt_weight - log_nut_weight
+    final_states, *_ = dc_map(inputs, combination_operator)
+    return final_states
 
-    logwt_fn = jnp.vectorize(logwt_fn, excluded=(2,), signature="(d),(d)->()")
 
-    operator = jit(partial(operator, logwt_fn=logwt_fn))
+def _make_log_weight_fn_and_params_inputs(weighting_model: UnivariatePotentialModel,
+                                          transition_model: BivariatePotentialModel,
+                                          potential_model: BivariatePotentialModel):
+    # The way we build this function is so that if the parameters are static for the model we don't duplicate them to
+    # be passed to the divide and conquer map.
 
-    if operator_has_auxiliary_outputs:
-        (_, particles, _, ells, *_), aux = compile_efficient_combination(elems, operator, return_intermediary,
-                                                                         operator_has_auxiliary_outputs,
-                                                                         passthrough_operator)
-        ells = jnp.concatenate([jnp.reshape(ell_0, (1,)), ells[1:]])
-        return ells, particles, aux
+    @jax.vmap
+    def log_weight_function(x_t_1, x_t, params_t):
+        weighting_params = params_t.get("weighting_params", weighting_model.parameters)
+        transition_params = params_t.get("transition_params", transition_model.parameters)
+        potential_params = params_t.get("potential_params", potential_model.parameters)
+
+        weighting_log_weight = weighting_model.log_potential(x_t, weighting_params)
+        transition_log_weight = transition_model.log_potential(x_t_1, x_t, transition_params)
+        potential_log_weight = potential_model.log_potential(x_t_1, x_t, potential_params)
+
+        return potential_log_weight + transition_log_weight - weighting_log_weight
+
+    params_dict = {}
+    if weighting_model.batched:
+        params_dict["weighting_params"] = jax.tree_map(lambda z: z[1:], weighting_model.parameters)
+    if weighting_model.batched:
+        params_dict["transition_params"] = jax.tree_map(lambda z: z[1:], transition_model.parameters)
+    if weighting_model.batched:
+        params_dict["potential_params"] = jax.tree_map(lambda z: z[1:], potential_model.parameters)
+
+    return log_weight_function, params_dict
+
+
+def _compute_first_log_weights(particles, initial_model, proposal_model, initial_potential_model):
+    log_weights = initial_model.log_potential(particles, initial_model.parameters)
+    log_weights = log_weights + initial_potential_model.log_potential(particles, initial_potential_model.parameters)
+    if proposal_model.batched:
+        proposal_parameters = jax.tree_map(lambda z: z[0], proposal_model.parameters)
     else:
-        _, particles, _, ells, *_ = compile_efficient_combination(elems, operator, return_intermediary,
-                                                                  operator_has_auxiliary_outputs,
-                                                                  passthrough_operator)
-        ells = jnp.concatenate([jnp.reshape(ell_0, (1,)), ells[1:]])
+        proposal_parameters = proposal_model.parameters
 
-        return ells, particles
+    return log_weights - proposal_model.log_potential(particles, proposal_parameters)
 
 
-def conditional_smoother(key, qt: Callable, log_qt: Callable, log_nut: Callable, log_Mt: Callable, log_Gt: Callable,
-                         log_G0: Callable, log_M0: Callable, T, qt_params, nut_params, Mt_params,
-                         Gt_params, x_t_cond, N=100):
-    key, init_key = split(key, 2)
-    init_keys = split(init_key, T)
-    qt = vmap(qt, in_axes=[0, None, 0])
+def _compute_generic_log_weights(particles, weighting_model, proposal_model):
+    # Compute the log weights corresponding to the weighting model first
+    if weighting_model.batched:
+        weighting_parameters = jax.tree_map(lambda z: z[1:], weighting_model.parameters)
+        weighting_log_weights = jax.vmap(weighting_model.log_potential)(particles, weighting_parameters)
+    else:
+        weighting_log_weights = jax.vmap(weighting_model.log_potential, in_axes=[0, None])(particles,
+                                                                                           weighting_model.parameters)
+    # Then compute the log weights corresponding to the proposal model
+    if proposal_model.batched:
+        proposal_parameters = jax.tree_map(lambda z: z[1:], proposal_model.parameters)
+        proposal_log_weights = jax.vmap(proposal_model.log_potential)(particles, proposal_parameters)
+    else:
+        proposal_log_weights = jax.vmap(proposal_model.log_potential, in_axes=[0, None])(particles,
+                                                                                         proposal_model.parameters)
 
-    init_particles = qt(init_keys, N - 1, qt_params)
-    init_particles = jnp.concatenate([jnp.expand_dims(x_t_cond, 1), init_particles], axis=1)
-    init_ells = jnp.zeros((T,))
-
-    init_log_qt = vmap(log_qt, in_axes=[0, 0])(init_particles, qt_params)  # vmapped across time
-
-    logw0 = vmap(log_G0)(init_particles[0]) + vmap(log_M0)(init_particles[0]) - init_log_qt[0]
-    ell_0, _ = normalize(logw0)
-
-    flat_nut_params, nut_tree_def = tree_flatten(nut_params)
-    init_log_nut = vmap(log_nut, in_axes=[0, 0])(init_particles[1:],
-                                                 tree_unflatten(nut_tree_def, [par[1:] for par in
-                                                                               flat_nut_params]))  # vmapped across time
-    log_weights = jnp.concatenate([jnp.expand_dims(logw0, 0), init_log_nut - init_log_qt[1:]])
-    # init_ells = jnp.concatenate([jnp.reshape(ell_0, (1,)), init_ells[1:]])
-    if T == 1:
-        return init_ells, init_particles
-
-    combination_keys = split(key, T)
-
-    elems = combination_keys, init_particles, log_weights, init_ells, (nut_params, Mt_params, Gt_params, x_t_cond)
-
-    def logwt_fn(x_t, x_t_1, params_t):
-        log_Gt_weight = log_Gt(x_t, x_t_1, params_t[2])
-        log_Mt_weight = log_Mt(x_t, x_t_1, params_t[1])
-        log_nut_weight = log_nut(x_t, params_t[0])
-        return log_Gt_weight + log_Mt_weight - log_nut_weight
-
-    logwt_fn = jnp.vectorize(logwt_fn, excluded=(2,), signature="(d),(d)->()")
-
-    operator = jit(partial(conditional_n2_combination, logwt_fn=logwt_fn, resampling_method=multinomial))
-
-    _, particles, _, ells, *_ = compile_efficient_combination(elems, operator)
-
-    return ells, particles
+    return weighting_log_weights - proposal_log_weights

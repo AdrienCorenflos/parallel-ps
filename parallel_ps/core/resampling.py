@@ -31,7 +31,6 @@ import jax
 import jax.numpy as jnp
 from chex import PRNGKey
 
-
 RESAMPLING_SIGNATURE = Callable[[jnp.ndarray, chex.PRNGKey, int], jnp.ndarray]
 
 

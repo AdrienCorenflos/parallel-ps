@@ -20,7 +20,7 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 from abc import ABC
-from typing import NamedTuple, TypeVar, Union, Tuple, List, Dict, Optional
+from typing import NamedTuple, TypeVar, Union, Tuple, List, Dict
 
 import chex
 import jax.numpy as jnp
@@ -91,7 +91,7 @@ class DSMCState(NamedTuple):
     origins: jnp.ndarray
 
 
-class UnivariatePotentialModel(NamedTuple, ABC):
+class UnivariatePotentialModel(NamedTuple):
     r"""
     Univariate potential model. For example this can represent x -> log(p(y|x)) or a given density, in which case the
     log-potential corresponds to the unnormalised log-likelihood.
@@ -101,9 +101,16 @@ class UnivariatePotentialModel(NamedTuple, ABC):
     ----------
     parameters: PyTree
         The parameters of the potential model for each time step.
-
+    batched: bool
+        Are the parameters batched along the first dimension (where each index corresponds to a time step) or is
+        parameters constant over all time steps
+    T: bool, optional
+        Number of time steps to sample from. If batched is False, then this must be given.
+        Otherwise, it will be overriden by the size of the first dimension in parameters leaves.
     """
     parameters: PyTree
+    batched: bool
+    T: int = None
 
     @classmethod
     def log_potential(cls, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
@@ -128,7 +135,7 @@ class UnivariatePotentialModel(NamedTuple, ABC):
         raise NotImplementedError
 
 
-class DensityModel(UnivariatePotentialModel, ABC):
+class DensityModel(UnivariatePotentialModel):
     """
     Same as the univariate potential model, but can also sample from the model. In practice this should be reserved to
     :math:`q_t` even if the potential model comes from a density in the first place (coding best practices).
@@ -140,7 +147,7 @@ class DensityModel(UnivariatePotentialModel, ABC):
 
     """
 
-    def sample(self, key: chex.PRNGKey, N: int, T: Optional[int] = None) -> chex.ArrayTree:
+    def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         """
         This samples the full proposal trajectories for the model.
         If `T` is given, then we consider that the same parameters are used at each time step,
@@ -152,9 +159,6 @@ class DensityModel(UnivariatePotentialModel, ABC):
             The jax random key used for sampling
         N: int
             Number of trajectories per time step
-        T: int, optional
-            Number of timesteps samples, default is None,
-            in which case `T` is taken from the batch dimension of `self.parameters`.
 
         Returns
         -------
@@ -165,7 +169,7 @@ class DensityModel(UnivariatePotentialModel, ABC):
         raise NotImplementedError("")
 
 
-class BivariatePotentialModel(NamedTuple, ABC):
+class BivariatePotentialModel(NamedTuple):
     r"""
     Bivariate potential model. For example this can represent x_t_1, x_t -> log(p(x_t|x_t_1)).
     It is used to define M_t and G_t.
@@ -173,15 +177,18 @@ class BivariatePotentialModel(NamedTuple, ABC):
     Parameters
     ----------
     parameters: PyTree
-        The parameters of the potential model for each time step. Note that it corresponds to the time step for $t$.
-
+        The parameters of the potential model for each time step.
+    batched: bool
+        Are the parameters batched along the first dimension (where each index corresponds to a time step) or is
+        parameters constant over all time steps
     """
     parameters: PyTree
+    batched: bool
 
     @classmethod
     def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         """
-        This computes the unnormalized log-potential of a given pair of particles (for a given time step)
+        This computes the unnormalised log-potential of a given pair of particles (for a given time step)
         under the model. A typical way to implement it would be to create an elementwise method
         `self.log_potential_one` and simply vmap it, but one could also implement the batching rules manually
          if there was a smarter way to do it.

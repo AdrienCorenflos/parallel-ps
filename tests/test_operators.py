@@ -19,7 +19,6 @@
 #  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
-from functools import partial
 
 import chex
 import jax
@@ -28,8 +27,8 @@ import numpy as np
 import pytest
 
 from parallel_ps.base import DSMCState, normalize
-from parallel_ps.core.resampling import multinomial, systematic, stratified, residual
-from parallel_ps.operators import operator
+from parallel_ps.core.resampling import multinomial, systematic, stratified
+from parallel_ps.operator import operator
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -114,6 +113,3 @@ def test_operator_other_mixing_weights(N, np_seed, resampling):
 
     np.testing.assert_allclose(actual[:10], expected_a, atol=1e-1, rtol=1e-1)
     np.testing.assert_allclose(actual[-5:], expected_b, atol=1e-1, rtol=1e-1)
-
-
-

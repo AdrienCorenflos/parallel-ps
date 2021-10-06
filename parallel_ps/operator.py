@@ -34,7 +34,7 @@ from parallel_ps.base import PyTree, DSMCState
 from parallel_ps.base import normalize
 from parallel_ps.core.resampling import multinomial, RESAMPLING_SIGNATURE
 
-_INPUTS_TYPE = Tuple[DSMCState, chex.PRNGKey, chex.ArrayTree or None]
+_INPUTS_TYPE = Tuple[DSMCState, chex.PRNGKey, chex.ArrayTree]
 
 
 @partial(jit, static_argnums=(2, 3, 4), donate_argnums=(0, 1))
@@ -87,7 +87,7 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
     vmapped_log_weight_fn = vmap(vmap(log_weight_fn,
                                       in_axes=[0, None, None], out_axes=0),
                                  in_axes=[None, 0, None], out_axes=1)
-    log_weight_increment = vmapped_log_weight_fn(x_t_1,  x_t, params_t)  # shape = M, N
+    log_weight_increment = vmapped_log_weight_fn(x_t_1, x_t, params_t)  # shape = M, N
 
     # Compute the log-likelihood increment
     ell_inc = logsumexp(log_weight_increment) - 2 * math.log(N)

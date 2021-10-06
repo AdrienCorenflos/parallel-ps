@@ -24,7 +24,6 @@
 
 from setuptools import setup
 
-
 setup(
     name='parallel-ps',
     version='0.0.1',
