@@ -35,7 +35,7 @@ class IndependentPropsosalModel(DensityModel):
 @pytest.mark.parametrize("T", [100])
 @pytest.mark.parametrize("np_seed", [42, 1234])
 @pytest.mark.parametrize("jax_seed", [0, 31415])
-@pytest.mark.parametrize("N", [25])
+@pytest.mark.parametrize("N", [50])
 @pytest.mark.parametrize("conditional", [True, False])
 def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
     np.random.seed(np_seed)
@@ -96,15 +96,22 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
             _, res = jax.lax.scan(body, init_trajectory, keys)
             return jnp.swapaxes(res, 0, 1)
 
-        smoother_solution = gibbs(1_000)
+        smoother_solution = gibbs(500)
 
     else:
         smoother_solution = particle_smoothing(rng_key, independent_proposal_model, weight_model,
                                                transition_model, observation_model, initial_model,
                                                NullPotentialModel(), systematic, N=N).trajectories
 
-    plt.plot(smoother_solution[..., 0].mean(1), label="PS-indep")
-    plt.plot(kalman_smoothing_solution[0][:, 0], label="KS")
-    plt.plot(kalman_filtering_solution[0][:, 0], label="KF")
+    plt.plot(smoother_solution[..., 0].mean(1), label="PS-indep", color="C0")
+    plt.fill_between(np.arange(0, T+1),
+                     smoother_solution[..., 0].mean(1) - 2 * smoother_solution[..., 0].std(1),
+                     smoother_solution[..., 0].mean(1) + 2 * smoother_solution[..., 0].std(1), alpha=0.33, color="C0")
+    plt.plot(kalman_smoothing_solution[0][:, 0], label="KS", color="C1")
+    plt.fill_between(np.arange(0, T+1),
+                     smoother_solution[..., 0].mean(1) - 2 * np.abs(kalman_smoothing_solution.chol[..., 0, 0]),
+                     smoother_solution[..., 0].mean(1) + 2 * np.abs(kalman_smoothing_solution.chol[..., 0, 0]),
+                     alpha=0.33, color="C1")
+    plt.plot(kalman_filtering_solution[0][:, 0], label="KF", color="C2")
     plt.legend()
     plt.show()
