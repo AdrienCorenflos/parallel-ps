@@ -17,6 +17,9 @@ def _lgssm_log_potential_one(x, y, F, b, cholQ):
 
 
 class LinearGaussianTransitionModel(BivariatePotentialModel):
+    parameters: PyTree
+    batched: PyTree
+
     @classmethod
     def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         F, b, cholQ = parameter
@@ -24,6 +27,9 @@ class LinearGaussianTransitionModel(BivariatePotentialModel):
 
 
 class LinearGaussianObservationModel(BivariatePotentialModel):
+    parameters: PyTree
+    batched: PyTree
+
     @classmethod
     def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         H, c, cholR, y_t = parameter
