@@ -19,8 +19,7 @@ def pytest_config():
 
 
 class IndependentPropsosalModel(DensityModel):
-    @classmethod
-    def log_potential(cls, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mean, chol = parameter
         return mvn_logprob_fn(particles, mean, chol)
 

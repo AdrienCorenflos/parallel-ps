@@ -138,8 +138,7 @@ class UnivariatePotentialModel(ParametrizedModel):
         parameters constant over all time steps. The tree structure is the same as parameters.
     """
 
-    @classmethod
-    def log_potential(cls, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+    def log_potential(self, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         """
         This computes the log-potential of a given particle (for a given time step)
         under the proposal model. This will be vmapped.
@@ -215,8 +214,7 @@ class BivariatePotentialModel(ParametrizedModel):
         parameters constant over all time steps. The tree structure is the same as parameters.
     """
 
-    @classmethod
-    def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+    def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         """
         This computes the unnormalised log-potential of a given pair of particles (for a given time step)
         under the model. This will be vmapped.
@@ -251,8 +249,7 @@ class ConditionalDensityModel(BivariatePotentialModel):
             parameters constant over all time steps. The tree structure is the same as parameters.
     """
 
-    @classmethod
-    def sample(cls, key: chex.PRNGKey, x_t_1: chex.ArrayTree, parameter: PyTree) -> chex.ArrayTree:
+    def sample(self, key: chex.PRNGKey, x_t_1: chex.ArrayTree, parameter: PyTree) -> chex.ArrayTree:
         """
         This samples X_t conditonally on x_t_1. This is batched across the simulation.
 
@@ -278,9 +275,9 @@ class NullPotentialModel(UnivariatePotentialModel):
     Null potential function
     Corresponds to an uninformative (or absent) information.
     """
+
     def __init__(self):
         UnivariatePotentialModel.__init__(self, None, None)
 
-    @classmethod
-    def log_potential(cls, particles: chex.ArrayTree, parameter: PyTree) -> float:
+    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> float:
         return 0.

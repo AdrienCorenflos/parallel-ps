@@ -20,8 +20,7 @@ class LinearGaussianTransitionModel(BivariatePotentialModel):
     parameters: PyTree
     batched: PyTree
 
-    @classmethod
-    def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+    def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         F, b, cholQ = parameter
         return _lgssm_log_potential_one(x_t_1, x_t, F, b, cholQ)
 
@@ -30,8 +29,7 @@ class LinearGaussianObservationModel(BivariatePotentialModel):
     parameters: PyTree
     batched: PyTree
 
-    @classmethod
-    def log_potential(cls, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+    def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         H, c, cholR, y_t = parameter
         return _lgssm_log_potential_one(x_t, y_t, H, c, cholR)
 
