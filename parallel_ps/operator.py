@@ -90,15 +90,15 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
     log_weight_increment = vmapped_log_weight_fn(x_t_1, x_t, params_t)  # shape = M, N
 
     # Compute the log-likelihood increment
-    ell_inc = logsumexp(log_weight_increment) - 2 * math.log(N)
 
     # Take the corresponding time step and reshape to allow for adding residual weights in parallel
     log_w_t_1 = log_weights_a[-1]
     log_w_t = log_weights_b[0]
     log_weights = log_weight_increment + log_w_t_1[None, :] + log_w_t[:, None]
+    ell_inc = logsumexp(log_weights)
 
     # Normalise
-    weights = normalize(jnp.ravel(log_weights))  # shape = M * N
+    weights = jnp.exp(jnp.ravel(log_weights) - ell_inc)  # shape = M * N
 
     idx = resampling_method(weights, key_t, N)  # shape = N
     left_idx, right_idx = jnp.unravel_index(idx, (N, N))
@@ -125,6 +125,7 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
     # Increment log-likelikelihood to the right
     ells = jnp.concatenate([ells_a, ells_a[-1] + ells_b + ell_inc])
     # Set the resulting log_weights to a constant.
-    log_weights = 0. * jnp.concatenate([log_weights_a, log_weights_b])
+    log_weights = jnp.concatenate([jnp.full_like(log_weights_a, -math.log(N)),
+                                   jnp.full_like(log_weights_b, -math.log(N))])
 
     return DSMCState(trajectories, log_weights, ells, origins), keys, params

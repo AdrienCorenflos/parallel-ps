@@ -28,11 +28,12 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.ops as ops
+from jax.experimental.host_callback import id_print
 from jax.random import split
 from jax.scipy.special import logsumexp
 
 from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, PyTree, DSMCState, \
-    split_batched_and_static_params, rejoin_batched_and_static_params, NullPotentialModel
+    split_batched_and_static_params, rejoin_batched_and_static_params, NullPotentialModel, normalize
 from parallel_ps.core import dc_vmap
 from parallel_ps.core.resampling import RESAMPLING_SIGNATURE, multinomial
 from parallel_ps.operator import operator
@@ -76,7 +77,8 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel
 
     Returns
     -------
-
+    smc_state: DSMCState
+        The final state of the algorithm
     """
     # In the current state of JAX, you should not JIT a PMAP operation as this induces communication
     # over devices instead of using shared memory.
@@ -137,7 +139,12 @@ def _smoothing(key: chex.PRNGKey,
                                                     T)
     log_weights = jnp.concatenate([jnp.expand_dims(first_log_weights, 0), rest_log_weights])
     # Compute the initial log-likelihood as a log mean exp operation.
-    ells = logsumexp(log_weights, 1) - math.log(N)
+
+    logsumexp_weights = logsumexp(log_weights, axis=1)
+
+    log_weights = log_weights - logsumexp_weights[:, None]  # normalize
+
+    ells = logsumexp_weights - math.log(N)
 
     # Get the log_weights and required batched input to it.
     log_weight_function, params_dict = _make_log_weight_fn_and_params_inputs(

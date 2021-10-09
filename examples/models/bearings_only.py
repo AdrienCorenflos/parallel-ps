@@ -8,7 +8,6 @@ import chex
 import jax.numpy as jnp
 import jax.scipy
 import matplotlib.pyplot as plt
-import numba as nb
 import numpy as np
 import scipy.linalg as linalg
 from jax import lax, jit
@@ -86,6 +85,7 @@ def _transition_function(x, dt):
                    [0, 0, coswt, sinwt, 0],
                    [0, 0, -sinwt, coswt, 0],
                    [0, 0, 0, 0, 1]])
+
     return F @ x
 
 
@@ -109,7 +109,7 @@ def _observation_function(x, s1, s2):
                       jnp.arctan2(x[1] - s2[1], x[0] - s2[0])])
 
 
-def make_model(x0, qc, qw, r, dt, s1, s2, T, seed=0):
+def make_model(x0, qc, qw, r, dt, s1, s2, T):
     """ Discretizes the model with continuous transition noise qc, for step-size dt.
     The model is described in "Multitarget-multisensor tracking: principles and techniques" by
     Bar-Shalom, Yaakov and Li, Xiao-Rong
@@ -130,12 +130,7 @@ def make_model(x0, qc, qw, r, dt, s1, s2, T, seed=0):
     s2: array_like
         The location of the second sensor
     T:  number of time steps for the model
-    seed: int
-        Numpy random seed for data generation
-
     """
-
-    np.random.seed(seed)
 
     Q = jnp.array([[qc * dt ** 3 / 3, 0, qc * dt ** 2 / 2, 0, 0],
                    [0, qc * dt ** 3 / 3, 0, qc * dt ** 2 / 2, 0],
@@ -146,16 +141,16 @@ def make_model(x0, qc, qw, r, dt, s1, s2, T, seed=0):
     chol_Q = jnp.linalg.cholesky(Q)
     chol_R = r * jnp.eye(2)
 
-    observation_function = jit(partial(_observation_function, s1=s1, s2=s2))
-    transition_function = jit(partial(_transition_function, dt=dt))
+    observation_function = partial(_observation_function, s1=s1, s2=s2)
+    transition_function = partial(_transition_function, dt=dt)
 
-    kalman_observation_model = FunctionalModel(lambda x, r: observation_function(x) + r,
+    kalman_observation_model = FunctionalModel(jit(lambda x, r_val: observation_function(x) + r_val),
                                                MVNSqrt(jnp.zeros((2,)), chol_R))
-    kalman_transition_model = FunctionalModel(lambda x, q: transition_function(x) + q,
+    kalman_transition_model = FunctionalModel(jit(lambda x, q: transition_function(x) + q),
                                               MVNSqrt(jnp.zeros((5,)), chol_Q))
 
-    m0 = np.array([-1., -1., 0., 0., 0.])
-    chol_P0 = np.eye(5)
+    m0 = jnp.array([-1., -1., 0., 0., 0.])
+    P0 = chol_P0 = jnp.eye(5)
     ts, xs, ys = get_data(x0, dt, r, T, s1, s2)
 
     initialisation_model = BearingsInitialModel(m0, chol_P0)
@@ -163,28 +158,25 @@ def make_model(x0, qc, qw, r, dt, s1, s2, T, seed=0):
     observation_potential = BearingsObservationPotential(observation_function, chol_R, jnp.asarray(ys))
 
     return (ts, xs, ys, kalman_observation_model, kalman_transition_model, initialisation_model, transition_kernel,
-            observation_potential, m0, chol_P0)
+            observation_potential, m0, P0)
 
 
-@nb.njit
 def _get_data(x, dt, a_s, s1, s2, r, normals, observations, true_states):
     for i, a in enumerate(a_s):
-        with nb.objmode(x='float32[::1]'):
-            F = np.array([[0, 0, 1, 0],
-                          [0, 0, 0, 1],
-                          [0, 0, 0, a],
-                          [0, 0, -a, 0]], dtype=np.float32)
-            x = linalg.expm(F * dt) @ x
+        F = np.array([[0, 0, 1, 0],
+                      [0, 0, 0, 1],
+                      [0, 0, 0, a],
+                      [0, 0, -a, 0]])
+        x = linalg.expm(F * dt) @ x
         y1 = np.arctan2(x[1] - s1[1], x[0] - s1[0]) + r * normals[i, 0]
         y2 = np.arctan2(x[1] - s2[1], x[0] - s2[0]) + r * normals[i, 1]
 
         observations[i] = [y1, y2]
         observations[i] = [y1, y2]
         true_states[i] = np.concatenate((x, np.array([a])))
-    # return true_states, observations
 
 
-def get_data(x0, dt, r, T, s1, s2, q=10., random_state=None):
+def get_data(x0, dt, r, T, s1, s2, q=10.):
     """
     Parameters
     ----------
@@ -202,8 +194,6 @@ def get_data(x0, dt, r, T, s1, s2, q=10., random_state=None):
         The location of the second sensor
     q: float
         noise of the angular momentum
-    random_state: np.random.RandomState or int, optional
-        numpy random state
 
     Returns
     -------
@@ -214,19 +204,17 @@ def get_data(x0, dt, r, T, s1, s2, q=10., random_state=None):
     observations: array_like
         array of observations
     """
-    if random_state is None or isinstance(random_state, int):
-        random_state = np.random.RandomState(random_state)
-    a_s = 1 + q * dt * np.cumsum(random_state.randn(T))
-    a_s = a_s.astype(np.float32)
-    s1 = np.asarray(s1, dtype=np.float32)
-    s2 = np.asarray(s2, dtype=np.float32)
 
-    x = np.copy(x0).astype(np.float32)
-    observations = np.empty((T, 2), dtype=np.float32)
-    true_states = np.empty((T, 5), dtype=np.float32)
-    ts = np.linspace(dt, (T + 1) * dt, T).astype(np.float32)
+    a_s = 1 + q * dt * np.cumsum(np.random.randn(T))
+    s1 = np.asarray(s1)
+    s2 = np.asarray(s2)
 
-    normals = random_state.randn(T, 2).astype(np.float32)
+    x = np.copy(x0)
+    observations = np.empty((T, 2))
+    true_states = np.empty((T, 5))
+    ts = np.linspace(dt, (T + 1) * dt, T)
+
+    normals = np.random.randn(T, 2)
 
     _get_data(x, dt, a_s, s1, s2, r, normals, observations, true_states)
     return ts, true_states, observations
