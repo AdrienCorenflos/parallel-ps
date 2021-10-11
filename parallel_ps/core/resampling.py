@@ -122,6 +122,57 @@ def residual(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int,
     return idx
 
 
+def coupled_resampling(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int,
+                       inner_resampling: Callable = multinomial) -> jnp.ndarray:
+    """
+    Coupled resampling scheme that works for an arbitrary number of weights lists.
+
+    Parameters
+    ----------
+    weights: jnp.ndarray
+        The weights that result in coupled resampling, the first dimension is the batching dimension,
+        second is the sample size
+    rng_key: chex.PRNGKey
+        The JAX random key for the operation
+    n_samples: int
+        Number of samples required
+    inner_resampling: callable
+        The resampling used for common part and the residual part
+
+    Returns
+    -------
+    ancestors: jnp.ndarray
+        The list of coupled ancestors. The first dimension is the batching dimension,
+        second is the sample size
+
+    References
+    ----------
+    [1] P. E. Jacob, F. Lindsten, T. B. Schön. Coupling of Particle Filters. https://arxiv.org/abs/1606.01156
+    """
+
+    batch_size, total_samples = weights.shape
+    uniforms_key, coupled_key, not_coupled_key = jax.random.split(rng_key, 3)
+
+    nu = jnp.min(weights, 0)
+    alpha = jnp.sum(nu)
+    mu = nu / alpha
+
+    residuals = (weights - nu[None, :]) / (1 - alpha)
+
+    # sample from the coupling mixture
+    uniforms = jax.random.uniform(uniforms_key, (n_samples,))
+    coupled = uniforms < alpha
+
+    # where the two are coupled, simply sample from mu
+    where_coupled = inner_resampling(mu, coupled_key, n_samples)
+
+    # otherwise sample from the residuals with a common random number
+    not_coupled_keys_batch = jax.random.split(not_coupled_key, batch_size)
+    where_not_coupled = jax.vmap(inner_resampling, in_axes=[0, 0, None])(residuals, not_coupled_keys_batch, n_samples)
+
+    return jnp.where(coupled[None, :], where_coupled, where_not_coupled)
+
+
 @partial(jax.jit, static_argnums=(2, 3), donate_argnums=(0, 1))
 def _systematic_or_stratified(
         weights: jnp.ndarray, rng_key: PRNGKey, n_sampled: int, is_systematic: bool

@@ -14,7 +14,7 @@ import scipy.linalg as linalg
 from jax import lax, jit
 
 from parallel_ps.base import BivariatePotentialModel, PyTree, UnivariatePotentialModel
-from parsmooth import FunctionalModel, MVNSqrt
+from parsmooth import FunctionalModel, MVNSqrt, MVNStandard
 
 
 def _mvn_logprob_fn(x, mean, chol_cov):
@@ -136,6 +136,7 @@ def make_model(x0, qc, qw, r, dt, s1, s2, T, seed=0):
     """
 
     np.random.seed(seed)
+    ts, xs, ys = get_data(x0, dt, r, T, s1, s2)
 
     Q = jnp.array([[qc * dt ** 3 / 3, 0, qc * dt ** 2 / 2, 0, 0],
                    [0, qc * dt ** 3 / 3, 0, qc * dt ** 2 / 2, 0],
@@ -150,13 +151,12 @@ def make_model(x0, qc, qw, r, dt, s1, s2, T, seed=0):
     transition_function = jit(partial(_transition_function, dt=dt))
 
     kalman_observation_model = FunctionalModel(lambda x, r: observation_function(x) + r,
-                                               MVNSqrt(jnp.zeros((2,)), chol_R))
+                                               MVNStandard(jnp.zeros((2,)), chol_R @ chol_R.T))
     kalman_transition_model = FunctionalModel(lambda x, q: transition_function(x) + q,
-                                              MVNSqrt(jnp.zeros((5,)), chol_Q))
+                                              MVNStandard(jnp.zeros((5,)), chol_Q @ chol_Q.T))
 
     m0 = np.array([-1., -1., 0., 0., 0.])
     chol_P0 = np.eye(5)
-    ts, xs, ys = get_data(x0, dt, r, T, s1, s2)
 
     initialisation_model = BearingsInitialModel(m0, chol_P0)
     transition_kernel = BearingsTransitionKernel(transition_function, chol_Q)
@@ -181,10 +181,9 @@ def _get_data(x, dt, a_s, s1, s2, r, normals, observations, true_states):
         observations[i] = [y1, y2]
         observations[i] = [y1, y2]
         true_states[i] = np.concatenate((x, np.array([a])))
-    # return true_states, observations
 
 
-def get_data(x0, dt, r, T, s1, s2, q=10., random_state=None):
+def get_data(x0, dt, r, T, s1, s2, q=10.):
     """
     Parameters
     ----------
@@ -202,8 +201,6 @@ def get_data(x0, dt, r, T, s1, s2, q=10., random_state=None):
         The location of the second sensor
     q: float
         noise of the angular momentum
-    random_state: np.random.RandomState or int, optional
-        numpy random state
 
     Returns
     -------
@@ -214,19 +211,17 @@ def get_data(x0, dt, r, T, s1, s2, q=10., random_state=None):
     observations: array_like
         array of observations
     """
-    if random_state is None or isinstance(random_state, int):
-        random_state = np.random.RandomState(random_state)
-    a_s = 1 + q * dt * np.cumsum(random_state.randn(T))
+    a_s = 1 + q * dt * np.cumsum(np.random.randn(T))
     a_s = a_s.astype(np.float32)
-    s1 = np.asarray(s1, dtype=np.float32)
-    s2 = np.asarray(s2, dtype=np.float32)
+    s1 = np.asarray(s1)
+    s2 = np.asarray(s2)
 
     x = np.copy(x0).astype(np.float32)
-    observations = np.empty((T, 2), dtype=np.float32)
-    true_states = np.empty((T, 5), dtype=np.float32)
-    ts = np.linspace(dt, (T + 1) * dt, T).astype(np.float32)
+    observations = np.empty((T, 2))
+    true_states = np.empty((T, 5))
+    ts = np.linspace(dt, (T + 1) * dt, T)
 
-    normals = random_state.randn(T, 2).astype(np.float32)
+    normals = np.random.randn(T, 2)
 
     _get_data(x, dt, a_s, s1, s2, r, normals, observations, true_states)
     return ts, true_states, observations
