@@ -3,10 +3,11 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+import pykalman as pykalman
 import pytest
 
-from parallel_ps.base import DensityModel, PyTree, NullPotentialModel, DSMCState
-from parallel_ps.core.resampling import systematic
+from parallel_ps.base import DensityModel, PyTree, NullPotentialModel
+from parallel_ps.core.resampling import stratified
 from parallel_ps.smoother import smoothing as particle_smoothing
 from parsmooth import FunctionalModel, MVNSqrt, filtering, smoothing, sampling
 from parsmooth.linearization import extended
@@ -31,11 +32,11 @@ class IndependentPropsosalModel(DensityModel):
 
 @pytest.mark.parametrize("dim_x", [1, 2])
 @pytest.mark.parametrize("dim_y", [1, 2])
-@pytest.mark.parametrize("T", [100])
+@pytest.mark.parametrize("T", [150])
 @pytest.mark.parametrize("np_seed", [42, 1234])
 @pytest.mark.parametrize("jax_seed", [0, 31415])
-@pytest.mark.parametrize("N", [50])
-@pytest.mark.parametrize("conditional", [True, False])
+@pytest.mark.parametrize("N", [100])
+@pytest.mark.parametrize("conditional", [False])
 def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
     np.random.seed(np_seed)
     rng_key = jax.random.PRNGKey(jax_seed)
@@ -98,16 +99,26 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
         smoother_solution = gibbs(500)
 
     else:
-        smoother_solution = particle_smoothing(rng_key, independent_proposal_model, weight_model,
-                                               transition_model, observation_model, initial_model,
-                                               NullPotentialModel(), systematic, N=N).trajectories
+        smoother = jax.vmap(lambda k: particle_smoothing(k, independent_proposal_model, weight_model,
+                                              transition_model, observation_model, initial_model,
+                                              NullPotentialModel(), stratified, N=N))
+        smoother_solution = smoother(jax.random.split(rng_key, 10))
+
+        print()
+        print(jnp.mean(smoother_solution.ells[:, -1]))
+        print(jnp.var(smoother_solution.ells[:, -1]))
+        kf = pykalman.KalmanFilter(F, H, chol_Q @ chol_Q.T, chol_R @ chol_R.T, transition_offsets=b,
+                                   observation_offsets=c, initial_state_mean=m0,
+                                   initial_state_covariance=chol_P0 @ chol_P0.T)
+        print(kf.loglikelihood(ys))
+        smoother_solution = smoother_solution.trajectories
 
     plt.plot(smoother_solution[..., 0].mean(1), label="PS-indep", color="C0")
-    plt.fill_between(np.arange(0, T+1),
+    plt.fill_between(np.arange(0, T + 1),
                      smoother_solution[..., 0].mean(1) - 2 * smoother_solution[..., 0].std(1),
                      smoother_solution[..., 0].mean(1) + 2 * smoother_solution[..., 0].std(1), alpha=0.33, color="C0")
     plt.plot(kalman_smoothing_solution[0][:, 0], label="KS", color="C1")
-    plt.fill_between(np.arange(0, T+1),
+    plt.fill_between(np.arange(0, T + 1),
                      smoother_solution[..., 0].mean(1) - 2 * np.abs(kalman_smoothing_solution.chol[..., 0, 0]),
                      smoother_solution[..., 0].mean(1) + 2 * np.abs(kalman_smoothing_solution.chol[..., 0, 0]),
                      alpha=0.33, color="C1")
