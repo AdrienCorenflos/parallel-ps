@@ -14,11 +14,7 @@ from jax import lax, jit
 
 from parallel_ps.base import BivariatePotentialModel, PyTree, UnivariatePotentialModel
 from parsmooth import FunctionalModel, MVNSqrt
-
-
-def _mvn_logprob_fn(x, mean, chol_cov):
-    y = jax.scipy.linalg.solve_triangular(chol_cov, x - mean, lower=True)
-    return - 0.5 * jnp.sum(y * y, -1)
+from tests.lgssm import mvn_loglikelihood
 
 
 class BearingsInitialModel(UnivariatePotentialModel):
@@ -27,7 +23,7 @@ class BearingsInitialModel(UnivariatePotentialModel):
 
     def log_potential(self, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         m0, chol_P0 = parameter
-        return _mvn_logprob_fn(x_t, m0, chol_P0)
+        return mvn_loglikelihood(x_t, m0, chol_P0)
 
 
 class BearingsTransitionKernel(BivariatePotentialModel):
@@ -38,7 +34,7 @@ class BearingsTransitionKernel(BivariatePotentialModel):
     def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         cholQ = parameter
         mean_x_t = self._transition_function(x_t_1)
-        return _mvn_logprob_fn(x_t, mean_x_t, cholQ)
+        return mvn_loglikelihood(x_t, mean_x_t, cholQ)
 
 
 class BearingsObservationPotential(BivariatePotentialModel):
@@ -49,7 +45,7 @@ class BearingsObservationPotential(BivariatePotentialModel):
     def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         cholR, y_t = parameter
         mean_y_t = self._observation_function(x_t)
-        return _mvn_logprob_fn(y_t, mean_y_t, cholR)
+        return mvn_loglikelihood(y_t, mean_y_t, cholR)
 
 
 def _transition_function(x, dt):

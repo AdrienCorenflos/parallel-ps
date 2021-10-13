@@ -6,14 +6,20 @@ import numpy as np
 from parallel_ps.base import BivariatePotentialModel, PyTree
 
 
-def mvn_logprob_fn(x, mean, chol_cov):
+def mvn_loglikelihood(x, mean, chol_cov):
+    """multivariate normal"""
+    dim = chol_cov.shape[0]
     y = jax.scipy.linalg.solve_triangular(chol_cov, x - mean, lower=True)
-    return - 0.5 * jnp.sum(y * y, -1)
+    normalizing_constant = (
+            jnp.sum(jnp.log(jnp.abs(jnp.diag(chol_cov)))) + dim * jnp.log(2 * jnp.pi) / 2.0
+    )
+    norm_y = jnp.sum(y * y, -1)
+    return -0.5 * norm_y - normalizing_constant
 
 
 def _lgssm_log_potential_one(x, y, F, b, cholQ):
     mean = F @ x + b
-    return mvn_logprob_fn(y, mean, cholQ)
+    return mvn_loglikelihood(y, mean, cholQ)
 
 
 class LinearGaussianTransitionModel(BivariatePotentialModel):

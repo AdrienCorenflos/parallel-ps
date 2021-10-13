@@ -6,7 +6,6 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
-import tqdm
 from matplotlib import pyplot as plt
 
 from examples.models.bearings_only import make_model, plot_bearings
@@ -16,11 +15,11 @@ from parallel_ps.smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing, sampling, filtering
-from tests.lgssm import mvn_logprob_fn
+from tests.lgssm import mvn_loglikelihood
 
 # CONFIG
 ### Particle smoother config
-N = 50  # Number of particles
+N = 250  # Number of particles
 B = 100  # Number of smoothers ran for stats
 
 ### Model config
@@ -58,12 +57,12 @@ filtering_trajectory = filtering(ys, MVNSqrt(m0, chol_P0), kalman_transition_mod
 
 class NutModel(UnivariatePotentialModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        return mvn_logprob_fn(particles, *parameter)
+        return mvn_loglikelihood(particles, *parameter)
 
 
 class QtModel(DensityModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        return mvn_logprob_fn(particles, *parameter)
+        return mvn_loglikelihood(particles, *parameter)
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         return sampling(key, N, kalman_transition_model, filtering_trajectory, extended, self.parameters, parallel=True)
@@ -75,7 +74,7 @@ q_t = QtModel(fixed_point_ICKS, MVNSqrt(True, True), T=T + 1)
 
 cps_from_key = jax.jit(lambda key, traj: particle_smoothing(key, q_t, nu_t, transition_kernel, observation_potential,
                                                             initialisation_model, NullPotentialModel(), multinomial, N,
-                                                            conditional_trajectory=traj))
+                                                            conditional_trajectory=traj, coupled=True)[0])
 
 
 ### DEFINE GIBBS ROUTINE
@@ -84,22 +83,19 @@ def gibbs_routine(rng_key, n_iter, init_traj):
     def count_rejuvenate(origins):
         return np.sum(origins != 0, axis=1)
 
-    pbar = tqdm.trange(n_iter)
-
     def body(curr_traj, inps):
         from jax.experimental.host_callback import id_tap
 
         i, curr_key = inps
-        curr_key = id_tap(lambda j: pbar.update(j), i, result=curr_key)  # just update tqdm
-        pbar.update(i + 1)
         sample_key, select_key = jax.random.split(curr_key)
-        samples = cps_from_key(sample_key, curr_traj)
+        samples = id_tap(lambda j: print(f"iteration {j}/{n_iter}", end="\r"), i,
+                         result=cps_from_key(sample_key, curr_traj))
         rejuvenated = count_rejuvenate(samples.origins)
         next_traj = samples.trajectories[:, jax.random.randint(select_key, (), 0, N - 1)]
         return next_traj, (next_traj, rejuvenated)
 
     keys = jax.random.split(rng_key, n_iter)
-    _, (gibbs_samples, rejuvenated) = jax.lax.scan(body, init_traj, keys)
+    _, (gibbs_samples, rejuvenated) = jax.lax.scan(body, init_traj, (jnp.arange(n_iter), keys))
     return jnp.swapaxes(gibbs_samples, 0, 1), rejuvenated
 
 
@@ -107,7 +103,7 @@ init_key, gibbs_key = jax.random.split(jax_key)
 init_traj = sampling(init_key, 1, kalman_transition_model, filtering_trajectory, extended, fixed_point_ICKS, True)
 
 particle_smoothing_result, rejuvenation_logs = gibbs_routine(gibbs_key, B, init_traj[:, 0])
-
+print()
 plt.plot(np.arange(T + 1), rejuvenation_logs.mean(0))
 plt.show()
 

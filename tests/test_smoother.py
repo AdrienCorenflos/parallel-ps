@@ -3,15 +3,14 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import pykalman as pykalman
 import pytest
 
 from parallel_ps.base import DensityModel, PyTree, NullPotentialModel
-from parallel_ps.core.resampling import stratified
+from parallel_ps.core.resampling import systematic
 from parallel_ps.smoother import smoothing as particle_smoothing
 from parsmooth import FunctionalModel, MVNSqrt, filtering, smoothing, sampling
 from parsmooth.linearization import extended
-from .lgssm import LinearGaussianObservationModel, LinearGaussianTransitionModel, get_data, mvn_logprob_fn
+from .lgssm import LinearGaussianObservationModel, LinearGaussianTransitionModel, get_data, mvn_loglikelihood
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -22,7 +21,7 @@ def pytest_config():
 class IndependentPropsosalModel(DensityModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mean, chol = parameter
-        return mvn_logprob_fn(particles, mean, chol)
+        return mvn_loglikelihood(particles, mean, chol)
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         means, chols = self.parameters
@@ -30,14 +29,30 @@ class IndependentPropsosalModel(DensityModel):
         return means[:, None, :] + jnp.einsum("...ij,...kj->...ki", chols, normals)
 
 
+class PathwiseModel(DensityModel):
+    def __init__(self, kalman_transition_model, filtering_trajectory, parameters: PyTree, batched: PyTree, T: int):
+        super().__init__(parameters, batched, T)
+        self._kalman_transition_model = kalman_transition_model
+        self._filtering_trajectory = filtering_trajectory
+
+    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+        return mvn_loglikelihood(particles, *parameter)
+
+    def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
+        return sampling(key, N, self._kalman_transition_model, self._filtering_trajectory, extended, self.parameters,
+                        parallel=True)
+
+
 @pytest.mark.parametrize("dim_x", [1, 2])
 @pytest.mark.parametrize("dim_y", [1, 2])
-@pytest.mark.parametrize("T", [150])
-@pytest.mark.parametrize("np_seed", [42, 1234])
-@pytest.mark.parametrize("jax_seed", [0, 31415])
-@pytest.mark.parametrize("N", [100])
+@pytest.mark.parametrize("T", [120])
+@pytest.mark.parametrize("np_seed", [1234])
+@pytest.mark.parametrize("jax_seed", [42])
+@pytest.mark.parametrize("N", [50])
 @pytest.mark.parametrize("conditional", [False])
-def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
+@pytest.mark.parametrize("coupled", [False])
+@pytest.mark.parametrize("independent", [False])
+def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, coupled, independent):
     np.random.seed(np_seed)
     rng_key = jax.random.PRNGKey(jax_seed)
 
@@ -57,8 +72,8 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
 
     kalman_transition_model = FunctionalModel(lambda x, eps: F @ x + eps, MVNSqrt(b, chol_Q))
     kalman_observation_model = FunctionalModel(lambda x, eps: H @ x + eps, MVNSqrt(c, chol_R))
-    kalman_filtering_solution = filtering(ys, MVNSqrt(m0, chol_P0), kalman_transition_model,
-                                          kalman_observation_model, extended)
+    kalman_filtering_solution, kalman_ell = filtering(ys, MVNSqrt(m0, chol_P0), kalman_transition_model,
+                                                      kalman_observation_model, extended, return_loglikelihood=True)
 
     kalman_smoothing_solution = smoothing(kalman_transition_model, kalman_filtering_solution, extended)
 
@@ -71,8 +86,12 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
         (False, False, False)
     )
 
-    independent_proposal_model = IndependentPropsosalModel(kalman_filtering_solution, MVNSqrt(True, True), T + 1)
-    weight_model = IndependentPropsosalModel(kalman_filtering_solution, MVNSqrt(True, True), T + 1)
+    if independent:
+        proposal_model = IndependentPropsosalModel(kalman_filtering_solution, MVNSqrt(True, True), T + 1)
+    else:
+        proposal_model = PathwiseModel(kalman_transition_model, kalman_filtering_solution, kalman_smoothing_solution,
+                                       MVNSqrt(True, True), T + 1)
+    weight_model = IndependentPropsosalModel(kalman_smoothing_solution, MVNSqrt(True, True), T + 1)
 
     initial_model = IndependentPropsosalModel(MVNSqrt(m0, chol_P0),
                                               MVNSqrt(False, False), None)
@@ -87,9 +106,10 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
 
             def body(traj, op_key):
                 sample_key, randint_key = jax.random.split(op_key)
-                final_state = particle_smoothing(sample_key, independent_proposal_model, weight_model,
-                                                 transition_model, observation_model, initial_model,
-                                                 NullPotentialModel(), N=N, conditional_trajectory=traj)
+                final_state, _ = particle_smoothing(sample_key, proposal_model, weight_model,
+                                                    transition_model, observation_model, initial_model,
+                                                    NullPotentialModel(), N=N, conditional_trajectory=traj,
+                                                    coupled=coupled)
                 new_traj = final_state.trajectories[:, jax.random.randint(randint_key, (), 0, N - 1)]
                 return new_traj, new_traj
 
@@ -97,20 +117,15 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
             return jnp.swapaxes(res, 0, 1)
 
         smoother_solution = gibbs(500)
-
+        np.testing.assert_allclose(smoother_solution.trajectories.mean(1), kalman_smoothing_solution.mean, rtol=1e-1)
     else:
-        smoother = jax.vmap(lambda k: particle_smoothing(k, independent_proposal_model, weight_model,
-                                              transition_model, observation_model, initial_model,
-                                              NullPotentialModel(), stratified, N=N))
-        smoother_solution = smoother(jax.random.split(rng_key, 10))
+        smoother = jax.jit(lambda k: particle_smoothing(k, proposal_model, weight_model,
+                                                                 transition_model, observation_model, initial_model,
+                                                                 NullPotentialModel(), systematic, N=N,
+                                                                 coupled=coupled))
+        smoother_solution, _ = smoother(rng_key)
 
-        print()
-        print(jnp.mean(smoother_solution.ells[:, -1]))
-        print(jnp.var(smoother_solution.ells[:, -1]))
-        kf = pykalman.KalmanFilter(F, H, chol_Q @ chol_Q.T, chol_R @ chol_R.T, transition_offsets=b,
-                                   observation_offsets=c, initial_state_mean=m0,
-                                   initial_state_covariance=chol_P0 @ chol_P0.T)
-        print(kf.loglikelihood(ys))
+        np.testing.assert_allclose(smoother_solution.ells[-1], kalman_ell, rtol=1e-1)
         smoother_solution = smoother_solution.trajectories
 
     plt.plot(smoother_solution[..., 0].mean(1), label="PS-indep", color="C0")
@@ -124,4 +139,5 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
                      alpha=0.33, color="C1")
     plt.plot(kalman_filtering_solution[0][:, 0], label="KF", color="C2")
     plt.legend()
+    plt.suptitle(f"Gibbs-{conditional}, coupled-{coupled}, independent-{independent}")
     plt.show()

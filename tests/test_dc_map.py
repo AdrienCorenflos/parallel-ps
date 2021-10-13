@@ -30,7 +30,7 @@ import pytest
 from jax import jit
 from jax.config import config
 
-from parallel_ps.core import dc_vmap, dc_pmap
+from parallel_ps.core import dc_map
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -40,12 +40,11 @@ def pytest_config():
 
 
 @pytest.mark.parametrize("np_seed", [42, 123, 666])
-@pytest.mark.parametrize("pmap", [True, False])
-def test_dc_map(np_seed, pmap):
+def test_dc_map(np_seed):
     some_structure = namedtuple("some_structure", ["x", "y"])
     np.random.seed(np_seed)
 
-    @jit
+    @jax.vmap
     def add(a, b):
         a_x, a_y = a
         b_x, b_y = b
@@ -56,18 +55,13 @@ def test_dc_map(np_seed, pmap):
         y = jnp.concatenate([a_y, b_y], 0)
         return some_structure(x, y)
 
-    linspace = np.arange(2, 10)
+    linspace = np.arange(16, 35, 3)
 
-    for i, k in enumerate(linspace):
-        T = 2 ** k
+    for T in linspace:
         x_init = np.random.randn(T, 3)
         y_init = np.random.randn(T, 4)
         elems = some_structure(x_init, y_init)
-        if not pmap:
-            result = dc_vmap(elems, add)
-        else:
-            with chex.fake_pmap():
-                result = dc_pmap(elems, add, jax.devices("cpu"))
+        result = dc_map(elems, add)
 
         np.testing.assert_allclose(result.x, np.cumsum(x_init, axis=0), atol=1e-5)
         np.testing.assert_allclose(result.y[::-1], np.cumsum(y_init[::-1], axis=0), atol=1e-5)

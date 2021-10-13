@@ -6,7 +6,6 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
-import tqdm
 from jax.experimental.optimizers import adam
 from matplotlib import pyplot as plt
 
@@ -17,7 +16,7 @@ from parallel_ps.smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing, sampling, filtering
-from tests.lgssm import mvn_logprob_fn
+from tests.lgssm import mvn_loglikelihood
 
 # CONFIG
 ### Particle smoother config
@@ -61,12 +60,12 @@ filtering_trajectory = filtering(ys, MVNSqrt(m0, chol_P0), kalman_transition_mod
 
 class NutModel(UnivariatePotentialModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        return mvn_logprob_fn(particles, *parameter)
+        return mvn_loglikelihood(particles, *parameter)
 
 
 class QtModel(DensityModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        return mvn_logprob_fn(particles, *parameter)
+        return mvn_loglikelihood(particles, *parameter)
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         return sampling(key, N, kalman_transition_model, filtering_trajectory, extended, self.parameters, parallel=True)
@@ -101,12 +100,11 @@ def step(rng_key, step, opt_state):
 
 opt_state = opt_init(fixed_point_ICKS)
 
-pbar = tqdm.trange(n_iter)
 keys = jax.random.split(jax_key, n_iter)
-for i in pbar:
+for i in range(n_iter):
     value, opt_state = step(keys[i], i, opt_state)
-    pbar.set_description("Loss %s" % value)
-
+    print(f"{i} / {n_iter}", end="\r")
+print()
 opt_mean, opt_chol = opt_get_params(opt_state)
 
 opt_nut = NutModel((opt_mean, opt_chol), (True, True))

@@ -8,7 +8,6 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
-import tqdm
 
 from examples.models.bearings_only import make_model
 from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, NullPotentialModel
@@ -17,13 +16,13 @@ from parallel_ps.smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing
-from tests.lgssm import mvn_logprob_fn
+from tests.lgssm import mvn_loglikelihood
 
 
 # CONFIG
 ### Particle smoother config
-N = 50  # Number of particles
-B = 10  # Number of smoothers run for stats
+N = 250  # Number of particles
+B = 4  # Number of smoothers run for stats
 
 ### Model config
 s1 = jnp.array([-1.5, 0.5])  # First sensor location
@@ -58,13 +57,13 @@ fixed_point_ICKS = iterated_smoothing(ys, MVNSqrt(m0, chol_P0), kalman_transitio
 class NutModel(UnivariatePotentialModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mean, chol = parameter
-        return mvn_logprob_fn(particles, mean, chol)
+        return mvn_loglikelihood(particles, mean, chol)
 
 
 class QtModel(DensityModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mean, chol = parameter
-        return mvn_logprob_fn(particles, mean, chol)
+        return mvn_loglikelihood(particles, mean, chol)
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         means, chols = self.parameters

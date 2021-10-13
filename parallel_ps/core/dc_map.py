@@ -22,29 +22,21 @@
 
 import math
 from functools import partial
-from typing import List, Callable
+from typing import Callable
 
 import jax.numpy as jnp
 import jax.ops
-from jax import vmap, lax
+import numpy as np
 
 from parallel_ps.base import PyTree
-from parallel_ps.core.pmap_util import pmap
 
 _EPS = 0.1  # this is a small float to make sure that log2(2**k) = k exactly
 
 
-def dc_vmap(elems: PyTree, operator: Callable[[PyTree, PyTree], PyTree]) -> PyTree:
-    return jax.jit(_dc_map, static_argnums=(1, 2))(elems, operator, vmap)
-
-
-def dc_pmap(elems: PyTree, operator: Callable[[PyTree, PyTree], PyTree], devices=List) -> PyTree:
-    return _dc_map(elems, operator, lambda fun: pmap(fun, devices))
-
-
-_DC_DESC = """
+def dc_map(elems: PyTree, operator: Callable[[PyTree, PyTree], PyTree]) -> PyTree:
+    """
     Divide and conquer routine for a generic operator. The algorithm essentially goes as follows:
-    
+
     1. Pad `elems` of shape (T, ...) in the first dimension to the nearest power of 2, resulting in length T=2^K
     2. For k=0...K-1
         a. Reshape `elems` to (T/2^k, 2^k, ...)
@@ -52,33 +44,32 @@ _DC_DESC = """
             `even_elems = elems[2t, t=0...T/2^k-2]`
             `odd_elems = elems[2t+1, t=0...T/2^k-2]`
         c. Combine `even_elems` and `odd_elems` in parallel along the first dimension
-            In parallel do: 
+            In parallel do:
             `elems[t] = operator(even_elems[t], odd_elems[t]), t=0...T/2^k-1`
     3. Return `elems`
-    
-    The parallelisation at each recursion level is done using {}.
-    
+
+    The parallelisation at each recursion level is done manually by the user, for example using `vmap`.
+
     Parameters
     ----------
     elems: PyTree
         The elements to be combined with operator
+
     operator: Callable[[PyTree, PyTree], PyTree]
-        The combination operator. 
+        The combination operator.
         It has to preserve the first (batch) dimension: e.g., in the case when elems is an array,
-        `operator(elems_1, elems_2).shape[0] == elems_1.shape[0] + elems_2.shape[0]`. 
+        `operator(elems_1, elems_2).shape[0] == elems_1.shape[0] + elems_2.shape[0]`.
         In general this has to be verified for all leaves in the PyTree.
 
     Returns
     -------
     combined_elems: PyTree
         The result of the operator being applied to the data in a divide and conquer manner.
-"""
-
-dc_vmap.__doc__ = _DC_DESC.format("`jax.vmap`")
-dc_pmap.__doc__ = _DC_DESC.format("`parallel_ps.core.pmap_util.pmap`")
+    """
+    return jax.jit(_dc_map, static_argnums=(1, 2))(elems, operator)
 
 
-def _dc_map(elems, operator, map_fn):
+def _dc_map(elems, operator):
     """
     This function is coded in a suboptimal way: the tree_map functions essentially make us go back and forth between
     the PyTree structure and the flat structure. However, it has the benefit of being substantially more readable than
@@ -93,26 +84,37 @@ def _dc_map(elems, operator, map_fn):
     pow_2 = _next_power_of_2(T)
     K = int(math.log2(pow_2 + _EPS))
 
+    indices = np.arange(pow_2)
     padded_elems = jax.tree_map(lambda elem: _pad(elem, pow_2, T), elems)  # pad with operator zeros (algebraic sense)
-    passthrough_flag = jnp.arange(pow_2) < T  # if t > T-1, use passthrough, otherwise combine
 
-    @map_fn
-    def combine(tree_a, use_a, tree_b, use_b):
-        use = use_a[-1] & use_b[0]
-        return lax.cond(use,
-                        lambda _: operator(tree_a, tree_b),
-                        lambda _: _passthrough(tree_a, tree_b),
-                        operand=None)
+    def combine(tree_a, indices_a, tree_b, indices_b):
+        # Compute the location where we can use the operator.
+        # Instead of a boolean mask we could also compute the slice of indices explicitly.
+        # Not sure which one would be best.
+        mask = np.logical_and(indices_a[..., -1] < T, indices_b[..., 0] < T)
+
+        tree_a_use = jax.tree_map(lambda z: z[mask], tree_a)
+        tree_b_use = jax.tree_map(lambda z: z[mask], tree_b)
+
+        tree_a_no_use = jax.tree_map(lambda z: z[~mask], tree_a)
+        tree_b_no_use = jax.tree_map(lambda z: z[~mask], tree_b)
+
+        combined = operator(tree_a_use, tree_b_use)
+        unchanged = _passthrough(tree_a_no_use, tree_b_no_use)
+
+        return jax.tree_map(lambda u, v: jnp.concatenate([u, v], 0), combined, unchanged)
 
     for k in range(K):
-        reshaped_tree = jax.tree_map(lambda elem, shape: _reshape(elem, 2 ** k, shape), padded_elems, shapes)
+        two_k = 2 ** k
+        reshaped_tree = jax.tree_map(lambda elem, shape: _reshape(elem, two_k, shape), padded_elems, shapes)
+        indices = np.reshape(indices, (-1, two_k))
+
         even_elems = jax.tree_map(lambda z: z[::2], reshaped_tree)
         odd_elems = jax.tree_map(lambda z: z[1::2], reshaped_tree)
 
-        reshaped_flags = jnp.reshape(passthrough_flag, (-1, 2 ** k))
-        even_flags, odd_flags = reshaped_flags[::2], reshaped_flags[1::2]
+        even_indices, odd_indices = indices[::2], indices[1::2]
 
-        padded_elems = combine(even_elems, even_flags, odd_elems, odd_flags)
+        padded_elems = combine(even_elems, even_indices, odd_elems, odd_indices)
 
     return jax.tree_map(lambda z, shape: z[0, :T, ...].reshape(shape), padded_elems, shapes)
 
@@ -129,6 +131,7 @@ def _next_power_of_2(n):
     return 2 ** k
 
 
+@jax.vmap
 @partial(jax.jit, donate_argnums=(0, 1))
 def _passthrough(tree_a, tree_b):
     return jax.tree_map(lambda x, y: jnp.concatenate([x, y], 0),

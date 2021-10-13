@@ -81,7 +81,7 @@ def multinomial(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int) -> jnp.n
     # his O(N) loop as our code is meant to work on GPU where searchsorted is O(log(N)) anyway.
 
     n = weights.shape[0]
-    linspace = _sorted_uniforms(n_samples, rng_key)
+    linspace = jax.random.uniform(rng_key, (n_samples,))
     cumsum = jnp.cumsum(weights)
     idx = jnp.searchsorted(cumsum, linspace)
     return jnp.clip(idx, 0, n - 1)
@@ -187,10 +187,3 @@ def _systematic_or_stratified(
     idx = jnp.searchsorted(cumsum, linspace)
     return jnp.clip(idx, 0, n - 1)
 
-
-@partial(jax.jit, static_argnums=(0,))
-def _sorted_uniforms(n, rng_key: PRNGKey) -> jnp.ndarray:
-    # Credit goes to Nicolas Chopin
-    us = jax.random.uniform(rng_key, (n + 1,))
-    z = jnp.cumsum(-jnp.log(us))
-    return z[:-1] / z[-1]

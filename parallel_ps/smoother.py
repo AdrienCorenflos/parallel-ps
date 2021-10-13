@@ -33,10 +33,10 @@ from jax.random import split
 from jax.scipy.special import logsumexp
 
 from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, PyTree, DSMCState, \
-    split_batched_and_static_params, rejoin_batched_and_static_params, NullPotentialModel, normalize
-from parallel_ps.core import dc_vmap
+    split_batched_and_static_params, rejoin_batched_and_static_params, NullPotentialModel
+from parallel_ps.core import dc_map
 from parallel_ps.core.resampling import RESAMPLING_SIGNATURE, multinomial
-from parallel_ps.operator import operator
+from parallel_ps.operators import operator, coupled_operator
 
 
 def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel,
@@ -45,7 +45,7 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel
               G0: UnivariatePotentialModel = NullPotentialModel(),
               resampling_method: RESAMPLING_SIGNATURE = multinomial,
               N: int = 100, conditional_trajectory: Optional[PyTree] = None,
-              dc_map: callable = dc_vmap):
+              coupled: bool = False):
     """
 
     Parameters
@@ -71,9 +71,8 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel
         Number of particles for the final state. Default is 100
     conditional_trajectory: PyTree, optional
         A conditional trajectory. If None (default) is passed, then the algorithm will be a standard particle smoother.
-    dc_map: callable
-        Divide and conquer utility used for the parallelisation. One of dc_vmap, or dc_pmap specialised to given
-        devices.
+    coupled: bool, optional
+        Are you using coupled resampling? (Useful only for dependent initial samples q_t.
 
     Returns
     -------
@@ -82,12 +81,8 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel
     """
     # In the current state of JAX, you should not JIT a PMAP operation as this induces communication
     # over devices instead of using shared memory.
-    if dc_map is dc_vmap:
-        static_argnums = 1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 18, 19, 21, 22
-        smoothing_fun = jax.jit(_smoothing, static_argnums=static_argnums)
-    else:
-        smoothing_fun = _smoothing
-
+    static_argnums = 1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 18, 19, 21, 22, 23
+    smoothing_fun = jax.jit(_smoothing, static_argnums=static_argnums)
     return smoothing_fun(key,
                          qt.sample, qt.log_potential, qt.parameters, qt.batched,
                          nut.log_potential, nut.parameters, nut.batched,
@@ -98,7 +93,7 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel
                          resampling_method,
                          N,
                          conditional_trajectory,
-                         dc_map,
+                         coupled,
                          qt.T)
 
 
@@ -112,7 +107,7 @@ def _smoothing(key: chex.PRNGKey,
                resampling_method: RESAMPLING_SIGNATURE,
                N,
                conditional_trajectory,
-               dc_map,
+               coupled,
                T):
     key, init_key = split(key, 2)
 
@@ -142,10 +137,11 @@ def _smoothing(key: chex.PRNGKey,
 
     logsumexp_weights = logsumexp(log_weights, axis=1)
 
+
+
     log_weights = log_weights - logsumexp_weights[:, None]  # normalize
 
-    ells = logsumexp_weights - math.log(N)
-
+    ells = jnp.zeros((T,))
     # Get the log_weights and required batched input to it.
     log_weight_function, params_dict = _make_log_weight_fn_and_params_inputs(
         nut_log_potential, nut_params, nut_batched_flag,
@@ -161,10 +157,18 @@ def _smoothing(key: chex.PRNGKey,
     inputs = dsmc_state, combination_keys, params_dict
 
     # Get the right operator
-    combination_operator: Callable = partial(operator,
-                                             log_weight_fn=log_weight_function,
-                                             resampling_method=resampling_method,
-                                             conditional=conditional_trajectory is not None)
+    if coupled:
+        combination_operator: Callable = partial(coupled_operator,
+                                                 log_weight_fn=log_weight_function,
+                                                 resampling_method=resampling_method,
+                                                 conditional=conditional_trajectory is not None,
+                                                 n_samples=N)
+    else:
+        combination_operator: Callable = jax.vmap(partial(operator,
+                                                          log_weight_fn=log_weight_function,
+                                                          resampling_method=resampling_method,
+                                                          conditional=conditional_trajectory is not None,
+                                                          n_samples=N))
 
     final_states, *_ = dc_map(inputs, combination_operator)
     if conditional_trajectory is not None:
@@ -240,8 +244,7 @@ def _compute_first_log_weights(particles,
 
     # Get the param corresponding to the first timestep if params are barched, otherwise simply get the static param
     qt_parameters = jax.tree_map(lambda z, b: z[0] if b else z,
-                                 qt_params,
-                                 qt_batched_flags)
+                                 qt_params, qt_batched_flags)
 
     return log_weights - qt_model_potential(particles, qt_parameters)
 

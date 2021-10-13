@@ -65,7 +65,24 @@ def test_coupled_resampling(B, N, np_seed, jax_seed, resampling):
 
     coupled_ancestors = jax.vmap(coupled_resampling, in_axes=[None, 0, None])(weights, batch_keys, n_samples)
 
+    def independent_ancestors_fun(key, w):
+        op_keys = jax.random.split(key, B)
+        return jax.vmap(resampling, in_axes=[0, 0, None])(w, op_keys, n_samples)
+
+    independent_ancestors = jax.vmap(independent_ancestors_fun, in_axes=[0, None])(batch_keys, weights)
+
+    same_coupled_ancestors = coupled_ancestors[:, 1:] == coupled_ancestors[:, :-1]
+    same_independent_ancestors = independent_ancestors[:, 1:] == independent_ancestors[:, :-1]
+
+    print()
+    print(np.mean(same_independent_ancestors, 0))
+    print(np.mean(same_coupled_ancestors, 0))
+
+    np.testing.assert_array_less(np.sum(same_independent_ancestors, 0), np.sum(same_coupled_ancestors, 0))
+
     count = jax.vmap(lambda z: jnp.bincount(jnp.ravel(z), length=N))(jnp.swapaxes(coupled_ancestors, 0, 1))
     actual_proba = count / (stat_batch_size * n_samples)
     np.testing.assert_allclose(np.sum(actual_proba, 1), 1., atol=1e-5)
     np.testing.assert_allclose(actual_proba, weights, atol=1e-4, rtol=1e-2)
+
+
