@@ -84,5 +84,3 @@ def test_coupled_resampling(B, N, np_seed, jax_seed, resampling):
     actual_proba = count / (stat_batch_size * n_samples)
     np.testing.assert_allclose(np.sum(actual_proba, 1), 1., atol=1e-5)
     np.testing.assert_allclose(actual_proba, weights, atol=1e-4, rtol=1e-2)
-
-

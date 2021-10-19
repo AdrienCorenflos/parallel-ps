@@ -28,12 +28,11 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.ops as ops
-import numpy as np
-from jax import tree_map, vmap
-from jax.scipy.special import logsumexp
+from jax import tree_map
 
 from parallel_ps.base import PyTree, DSMCState
-from parallel_ps.core.resampling import multinomial, RESAMPLING_SIGNATURE, coupled_resampling
+from parallel_ps.core.resampling import multinomial, RESAMPLING_SIGNATURE
+from parallel_ps.smoothing_utils import get_weights_batch
 
 _INPUTS_TYPE = Tuple[DSMCState, chex.PRNGKey, chex.ArrayTree or None]
 
@@ -77,9 +76,9 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
     trajectories_a, log_weights_a, ells_a, origins_a = state_a
     trajectories_b, log_weights_b, ells_b, origins_b = state_b
 
-    weights, ell_inc = _get_weights(trajectories_a, log_weights_a,
-                                    trajectories_b, log_weights_b, params_b,
-                                    log_weight_fn)
+    weights, ell_inc = get_weights_batch(trajectories_a, log_weights_a,
+                                         trajectories_b, log_weights_b, params_b,
+                                         log_weight_fn)
 
     idx = resampling_method(jnp.ravel(weights), keys_b[0], n_samples)  # shape = N
     l_idx, r_idx = jax.vmap(jnp.unravel_index, in_axes=[0, None])(idx, (n_samples, n_samples))
@@ -87,104 +86,6 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
     return _gather_results(l_idx, r_idx, n_samples, conditional, ell_inc,
                            trajectories_a, origins_a, ells_a, log_weights_a, keys_a, params_a,
                            trajectories_b, origins_b, ells_b, log_weights_b, keys_b, params_b)
-
-
-@partial(jax.jit, static_argnums=(2, 3, 4, 5), donate_argnums=(0, 1))
-def coupled_operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE,
-                     log_weight_fn: Callable[[PyTree, PyTree, Any], float],
-                     resampling_method: RESAMPLING_SIGNATURE,
-                     n_samples: int, conditional: bool = False):
-    """
-    Operator corresponding to the stitching operation of the dSMC algorithm.
-    It implements both conditional (for conditional dSMC) and non-conditional operations.
-
-    Parameters
-    ----------
-    inputs_a: tuple
-        A tuple of three arguments.
-        First one is the state of the partial dSMC smoother to the left of the current time step.
-        Second are the jax random keys used for resampling at the time steps to the left of the current time step.
-        Third are the parameters used to compute the mixing weights to the left of the current time step.
-    inputs_b: tuple
-        Same as `inputs_b` but to the right of the current time step
-    log_weight_fn: callable
-        Function that computes the un-normalised stitching N^2 weights, first argument is x_{t-1}, second is x_t.
-        It will be automatically batched so only needs to be expressed elementwise
-    resampling_method: `parallel_ps.core.resampling.RESAMPLING_SIGNATURE`
-        Resampling method used in the algorithm.
-    n_samples: int
-        Number of samples in the resampling
-    conditional: bool, optional
-        Is this the conditional operator? Default is False.
-
-    Returns
-    -------
-
-    """
-    # All operations apart from the resampling can be done independently.
-
-    if conditional and resampling_method is not multinomial:
-        raise NotImplementedError("Conditional dSMC with non-multinomial resampling is not implemented yet.")
-
-    # Unpack the states
-    state_a, keys_a, params_a = inputs_a
-    state_b, keys_b, params_b = inputs_b
-    trajectories_a, log_weights_a, ells_a, origins_a = state_a
-    trajectories_b, log_weights_b, ells_b, origins_b = state_b
-
-    weights, ell_inc = jax.vmap(_get_weights, in_axes=[0, 0, 0, 0, 0, None])(trajectories_a, log_weights_a,
-                                                                             trajectories_b, log_weights_b, params_b,
-                                                                             log_weight_fn)
-    key_t = keys_b[0, 0]
-    # # transpose 1 step out of 2 so that coupling targets the right indices
-    batch_size = weights.shape[0]
-    transpose = np.arange(batch_size) % 2
-    weights = jnp.where(transpose[:, None, None],
-                        jnp.transpose(weights, [0, 2, 1]),
-                        weights)
-
-    # resample
-    weights = jax.vmap(jnp.ravel)(weights)
-    idx = coupled_resampling(weights, key_t, n_samples, resampling_method)
-    l_idx, r_idx = jax.vmap(jnp.unravel_index, in_axes=[0, None])(idx, (n_samples, n_samples))
-
-    # reorganise indices after the transpose (at the same time!)
-    l_idx, r_idx = jnp.where(transpose[:, None], r_idx, l_idx), jnp.where(transpose[:, None], l_idx, r_idx)
-
-    vmapped_gather = jax.vmap(_gather_results, in_axes=[0, 0, None, None, 0] + [0] * 14)
-
-    return vmapped_gather(l_idx, r_idx, n_samples, conditional, ell_inc,
-                          trajectories_a, origins_a, ells_a, log_weights_a, keys_a, params_a,
-                          trajectories_b, origins_b, ells_b, log_weights_b, keys_b, params_b)
-
-
-def _get_weights(trajectories_a, log_weights_a,
-                 trajectories_b, log_weights_b, params_b,
-                 log_weight_fn: Callable[[PyTree, PyTree, Any], float]):
-    # House keeping to get the required inputs.
-    params_t = tree_map(lambda z: z[0], params_b)
-
-    # Take the corresponding time step and reshape to allow for computing the mixing weights in parallel
-    x_t_1 = tree_map(lambda z: z[-1], trajectories_a)
-    x_t = tree_map(lambda z: z[0], trajectories_b)
-
-    # This nested vmap allows to define log_weight_fn more easily at the API level. This is to create a
-    # (N,N) -> N^2 function while only having to care about elementwise formulas.
-    # if log_weight_fn = lambda a, b: u * v, then this corresponds to np.outer.
-    vmapped_log_weight_fn = vmap(vmap(log_weight_fn,
-                                      in_axes=[None, 0, None], out_axes=0),
-                                 in_axes=[0, None, None], out_axes=0)
-    log_weight_increment = vmapped_log_weight_fn(x_t_1, x_t, params_t)  # shape = M, N
-
-    # Take the corresponding time step and reshape to allow for adding residual weights in parallel
-    log_w_t_1 = log_weights_a[-1]
-    log_w_t = log_weights_b[0]
-
-    log_weights = log_weight_increment + log_w_t_1[:, None] + log_w_t[None, :]
-    ell_inc = logsumexp(log_weights)
-
-    weights = jnp.exp(log_weights - ell_inc)
-    return weights, ell_inc
 
 
 def _gather_results(left_idx, right_idx, n_samples, conditional, ell_inc,

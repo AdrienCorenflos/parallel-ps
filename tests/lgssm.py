@@ -84,7 +84,7 @@ def get_data(m0, chol_P0, F, H, chol_R, chol_Q, b, c, T):
 
     for i, (norm_x, norm_y) in enumerate(zip(normals_x, normals_y)):
         x = F @ x + chol_Q @ norm_x + b
-        true_states[i+1] = x
+        true_states[i + 1] = x
         y = H @ x + chol_R @ norm_y + c
         observations[i] = y
 

@@ -12,22 +12,22 @@ import numpy as np
 from examples.models.bearings_only import make_model
 from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, NullPotentialModel
 from parallel_ps.core.resampling import systematic
-from parallel_ps.smoother import smoothing as particle_smoothing
+from parallel_ps.ffbs_smoother import smoothing as ffbs
+from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing
 from tests.lgssm import mvn_loglikelihood
 
-
 # CONFIG
 ### Particle smoother config
 N = 250  # Number of particles
-B = 4  # Number of smoothers run for stats
+B = 100  # Number of smoothers run for stats
 
 ### Model config
 s1 = jnp.array([-1.5, 0.5])  # First sensor location
 s2 = jnp.array([1., 1.])  # Second sensor location
-r = 0.5  # Observation noise (stddev)
+r = 0.05  # Observation noise (stddev)
 dt = 0.01  # discretisation time step
 x0 = jnp.array([0.1, 0.2, 1., 0.])  # initial true location
 qc = 0.01  # discretisation noise
@@ -77,18 +77,30 @@ q_t = QtModel(fixed_point_ICKS, MVNSqrt(True, True), T=T + 1)
 
 ### RUN
 
-jax_keys = jax.random.split(jax_key, B)
-n_unique = np.empty((B,))
-
 ps_from_key = jax.jit(lambda key: particle_smoothing(key, q_t, nu_t, transition_kernel, observation_potential,
                                                      initialisation_model, NullPotentialModel(), systematic, N))
 
+compile_smoother = ps_from_key(jax_key)
+compile_smoother.trajectories.block_until_ready()
+
 tic = time.time()
-particle_smoothing_results = jax.vmap(ps_from_key)(jax_keys)
+for _ in range(B):
+    particle_smoothing_results = ps_from_key(jax_key)
+    particle_smoothing_results.trajectories.block_until_ready()
 toc = time.time()
 
-print(toc - tic)
-for b in range(B):
-    n_unique[b] = np.mean([len(np.unique(particle_smoothing_results.origins[b, t])) for t in range(T + 1)])
+print("parallel particle smoother time:", (toc - tic) / B)
 
-print(n_unique)
+ffbs_from_key = jax.jit(lambda key: ffbs(key, q_t, transition_kernel, observation_potential,
+                                         initialisation_model, NullPotentialModel(), N))
+
+ffbs_compile = ffbs_from_key(jax_key)
+ffbs_compile.block_until_ready()
+
+tic = time.time()
+for _ in range(B):
+    ffbs_results = ffbs_from_key(jax_key)
+    ffbs_results.block_until_ready()
+toc = time.time()
+
+print("FFBS time:", (toc - tic) / B)

@@ -186,4 +186,3 @@ def _systematic_or_stratified(
     linspace = (jnp.arange(n_sampled, dtype=weights.dtype) + u) / n_sampled
     idx = jnp.searchsorted(cumsum, linspace)
     return jnp.clip(idx, 0, n - 1)
-

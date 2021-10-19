@@ -22,12 +22,10 @@
 
 from collections import namedtuple
 
-import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax import jit
 from jax.config import config
 
 from parallel_ps.core import dc_map

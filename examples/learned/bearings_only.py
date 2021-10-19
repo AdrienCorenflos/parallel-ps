@@ -11,8 +11,8 @@ from matplotlib import pyplot as plt
 
 from examples.models.bearings_only import make_model, plot_bearings
 from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, NullPotentialModel
-from parallel_ps.core.resampling import stratified
-from parallel_ps.smoother import smoothing as particle_smoothing
+from parallel_ps.core.resampling import systematic
+from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing, sampling, filtering
@@ -20,8 +20,9 @@ from tests.lgssm import mvn_loglikelihood
 
 # CONFIG
 ### Particle smoother config
-N = 25  # Number of particles
+N = 50  # Number of particles
 B = 3  # Number of smoothers ran for stats
+independent = False  # Independent proposals
 
 ### Model config
 s1 = jnp.array([-1.5, 0.5])  # First sensor location
@@ -46,14 +47,16 @@ jax_key = jax.random.PRNGKey(jax_seed)
 # GET MODEL
 
 (ts, xs, ys, kalman_observation_model, kalman_transition_model, initialisation_model, transition_kernel,
- observation_potential, m0,
- chol_P0) = make_model(x0, qc, qw, r, dt, s1, s2, T)
+ observation_potential, m0, chol_P0) = make_model(x0, qc, qw, r, dt, s1, s2, T)
 
 fixed_point_ICKS = iterated_smoothing(ys, MVNSqrt(m0, chol_P0), kalman_transition_model, kalman_observation_model,
                                       extended, parallel=True, criterion=lambda i, *_: i < 100)
 
-filtering_trajectory = filtering(ys, MVNSqrt(m0, chol_P0), kalman_transition_model, kalman_observation_model,
-                                 extended, fixed_point_ICKS, parallel=True)
+filtering_trajectory, kalman_ell = filtering(ys, MVNSqrt(m0, chol_P0), kalman_transition_model,
+                                             kalman_observation_model, extended, fixed_point_ICKS, parallel=True,
+                                             return_loglikelihood=True)
+
+print("Kalman log-likelihood:", kalman_ell / T)
 
 
 # DEFINE nu_t and q_t
@@ -63,13 +66,27 @@ class NutModel(UnivariatePotentialModel):
         return mvn_loglikelihood(particles, *parameter)
 
 
-class QtModel(DensityModel):
-    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        return mvn_loglikelihood(particles, *parameter)
+if independent:
 
-    def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
-        return sampling(key, N, kalman_transition_model, filtering_trajectory, extended, self.parameters, parallel=True)
+    class QtModel(DensityModel):
+        def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+            mean, chol = parameter
+            return mvn_loglikelihood(particles, mean, chol)
 
+        def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
+            means, chols = self.parameters
+            normals = jax.random.normal(key, (self.T, N, means.shape[-1]))
+            return means[:, None, :] + jnp.einsum("...ij,...kj->...ki", chols, normals)
+
+else:
+
+    class QtModel(DensityModel):
+        def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+            return mvn_loglikelihood(particles, *parameter)
+
+        def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
+            return sampling(key, N, kalman_transition_model, filtering_trajectory, extended, self.parameters,
+                            parallel=True)
 
 ### INSTANTIATE
 q_t = QtModel(fixed_point_ICKS, MVNSqrt(True, True), T=T + 1)
@@ -81,7 +98,7 @@ def loss_function(key, nut_params):
     @jax.vmap
     def loss_one(k):
         samples = particle_smoothing(k, q_t, nu_t, transition_kernel, observation_potential,
-                                     initialisation_model, NullPotentialModel(), stratified, N)
+                                     initialisation_model, NullPotentialModel(), systematic, N)
         return -samples.ells[-1] / T
 
     keys = jax.random.split(key, B)
@@ -102,15 +119,16 @@ opt_state = opt_init(fixed_point_ICKS)
 
 keys = jax.random.split(jax_key, n_iter)
 for i in range(n_iter):
+    # with jax.disable_jit():
     value, opt_state = step(keys[i], i, opt_state)
-    print(f"{i} / {n_iter}", end="\r")
+    print(f"iteration: {i + 1} / {n_iter}, loss value: {value}", end="\r")
 print()
 opt_mean, opt_chol = opt_get_params(opt_state)
 
 opt_nut = NutModel((opt_mean, opt_chol), (True, True))
 
 opt_res = particle_smoothing(jax_key, q_t, opt_nut, transition_kernel, observation_potential,
-                             initialisation_model, NullPotentialModel(), stratified, N)
+                             initialisation_model, NullPotentialModel(), systematic, N)
 
 plot_bearings([xs, fixed_point_ICKS.mean, opt_res.trajectories.mean(1)],
               ["True", "ICKS", "Optimised PS"],

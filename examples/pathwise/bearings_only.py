@@ -10,8 +10,8 @@ from matplotlib import pyplot as plt
 
 from examples.models.bearings_only import make_model, plot_bearings
 from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, NullPotentialModel
-from parallel_ps.core.resampling import stratified, systematic
-from parallel_ps.smoother import smoothing as particle_smoothing
+from parallel_ps.core.resampling import systematic
+from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing, sampling, filtering
@@ -84,7 +84,6 @@ print(particle_smoothing_result.origins)
 n_unique = np.mean([len(np.unique(particle_smoothing_result.origins[t])) for t in range(T + 1)])
 
 print(n_unique)
-
 
 # n_samples = 5
 # samples = q_t.sample(jax_keys[0], n_samples)

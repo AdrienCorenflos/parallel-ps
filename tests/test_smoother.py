@@ -7,7 +7,7 @@ import pytest
 
 from parallel_ps.base import DensityModel, PyTree, NullPotentialModel
 from parallel_ps.core.resampling import systematic
-from parallel_ps.smoother import smoothing as particle_smoothing
+from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parsmooth import FunctionalModel, MVNSqrt, filtering, smoothing, sampling
 from parsmooth.linearization import extended
 from .lgssm import LinearGaussianObservationModel, LinearGaussianTransitionModel, get_data, mvn_loglikelihood
@@ -120,9 +120,9 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, coupled, i
         np.testing.assert_allclose(smoother_solution.trajectories.mean(1), kalman_smoothing_solution.mean, rtol=1e-1)
     else:
         smoother = jax.jit(lambda k: particle_smoothing(k, proposal_model, weight_model,
-                                                                 transition_model, observation_model, initial_model,
-                                                                 NullPotentialModel(), systematic, N=N,
-                                                                 coupled=coupled))
+                                                        transition_model, observation_model, initial_model,
+                                                        NullPotentialModel(), systematic, N=N,
+                                                        coupled=coupled))
         smoother_solution, _ = smoother(rng_key)
 
         np.testing.assert_allclose(smoother_solution.ells[-1], kalman_ell, rtol=1e-1)

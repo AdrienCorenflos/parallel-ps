@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 from examples.models.bearings_only import make_model, plot_bearings
 from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, NullPotentialModel
 from parallel_ps.core.resampling import multinomial
-from parallel_ps.smoother import smoothing as particle_smoothing
+from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parsmooth import MVNSqrt
 from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing, sampling, filtering
@@ -21,6 +21,7 @@ from tests.lgssm import mvn_loglikelihood
 ### Particle smoother config
 N = 250  # Number of particles
 B = 100  # Number of smoothers ran for stats
+independent = True  # Independent proposals
 
 ### Model config
 s1 = jnp.array([-1.5, 0.5])  # First sensor location
@@ -60,13 +61,27 @@ class NutModel(UnivariatePotentialModel):
         return mvn_loglikelihood(particles, *parameter)
 
 
-class QtModel(DensityModel):
-    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        return mvn_loglikelihood(particles, *parameter)
+if independent:
 
-    def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
-        return sampling(key, N, kalman_transition_model, filtering_trajectory, extended, self.parameters, parallel=True)
+    class QtModel(DensityModel):
+        def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+            mean, chol = parameter
+            return mvn_loglikelihood(particles, mean, chol)
 
+        def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
+            means, chols = self.parameters
+            normals = jax.random.normal(key, (self.T, N, means.shape[-1]))
+            return means[:, None, :] + jnp.einsum("...ij,...kj->...ki", chols, normals)
+
+else:
+
+    class QtModel(DensityModel):
+        def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+            return mvn_loglikelihood(particles, *parameter)
+
+        def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
+            return sampling(key, N, kalman_transition_model, filtering_trajectory, extended, self.parameters,
+                            parallel=True)
 
 ### INSTANTIATE
 nu_t = NutModel(fixed_point_ICKS, MVNSqrt(True, True))
