@@ -87,7 +87,7 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel,
 
     sampled_traj, sampled_indices = _backward_sampling(smoother_key, filter_trajectories, filter_log_weights,
                                                        Mt.log_potential, Mt.parameters, Mt.batched, M)
-    return sampled_traj
+    return sampled_traj, sampled_indices
 
 
 @partial(jax.jit, static_argnums=(1, 2, 4, 5, 7, 8, 10, 11, 13, 15, 16))
