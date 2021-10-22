@@ -1,7 +1,8 @@
 """
 Theta-logistic Gibbs sampling experiment design
 """
-# IMPORTS
+import time
+import warnings
 from functools import partial
 
 import chex
@@ -21,13 +22,18 @@ from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing
 from tests.lgssm import mvn_loglikelihood
 
+# IMPORTS
+
 # CONFIG
+warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
+# jax.config.update("jax_disable_jit", True)
+jax.config.update("jax_platform_name", "gpu")
 # Particle smoother config
 
-N = 50  # Number of particles
+N = 25  # Number of particles
 B = 1_000  # Number of time steps in the chain
 
-uniform = False  # use a unform (random) grid to sample the proposals
+uniform = False  # use a uniform (random) grid to sample the proposals
 min_uniform = 0.
 max_uniform = 10.
 # Data
@@ -40,6 +46,7 @@ y_prec_prior = tfp.distributions.Gamma(2., 1.)
 tau0_prior = tfp.distributions.TruncatedNormal(0., 1., 0., 3.)
 tau1_prior = tfp.distributions.TruncatedNormal(0., 1., 0., 3.)
 tau2_prior = tfp.distributions.TruncatedNormal(0., 1., 0., 3.)
+tau2_scale = 0.2  # scale used for the RMH proposal in tau2
 
 
 # Utility functions to compute posteriors
@@ -84,7 +91,8 @@ class UniformDensityModel(DensityModel):
         return min_ + (max_ - min_) * uniforms
 
 
-def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init, traj=None):
+@jax.jit
+def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init=None, traj=None):
     """
     Run a conditional dSMC
 
@@ -111,6 +119,9 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init, traj=None):
         next_smoother_init = None
 
     else:
+        if smoother_init is None:
+            smoother_init = MVNSqrt(jnp.concatenate([jnp.zeros((1, 1)), data]),
+                                    1e-1 * jnp.ones((T + 1, 1, 1)))
         kalman_transition_model = FunctionalModel(lambda x, q_val: transition_function(x, tau0, tau1, tau2) + q_val,
                                                   MVNSqrt(zero, chol_Q))
         kalman_observation_model = FunctionalModel(lambda x, r_val: observation_function(x) + r_val,
@@ -120,23 +131,27 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init, traj=None):
                                                        criterion=lambda i, *_: i < 10)
         next_smoother_init = kalman_smoothing_solution
 
-        q_t = KalmanSmootherDensity(*kalman_smoothing_solution)
+        # Parsmooth considers that the first step is always a prediction, so we need to get rid of it via a vile hack.
+        # It's fine as it is only the proposal q_t, but it's suboptimal. Need to fix this.
+        q_t = KalmanSmootherDensity(*jax.tree_map(lambda z: z[1:], kalman_smoothing_solution))
     nu_t = q_t
 
     gen_observation_potential = ObservationPotential(chol_R, data[1:])
     init_observation_potential = InitObservationPotential(chol_R, data[0])
-    samples = particle_smoothing(key, q_t, nu_t, TransitionKernel(tau0, tau1, tau2, q), gen_observation_potential,
+    samples = particle_smoothing(key, q_t, nu_t, TransitionKernel(tau0, tau1, tau2, chol_Q), gen_observation_potential,
                                  InitialModel(m0, chol_P0), init_observation_potential, multinomial, N,
                                  conditional_trajectory=traj)
 
     return samples, next_smoother_init
 
 
-def sample_params(key, tau0, tau1, tau2, sampled_traj, tau2_scale=0.2):
+@jax.jit
+def sample_params(key, tau0, tau1, tau2, sampled_traj):
     """
     Sample from the posterior of the parameters of the theta-logistic model given a sampling trajectory and the data.
     """
     # Get keys for each parameter
+
     x_prec_key, y_prec_key, tau01_key, tau2_key = jax.random.split(key, 4)
 
     # compute the residuals
@@ -160,33 +175,33 @@ def sample_params(key, tau0, tau1, tau2, sampled_traj, tau2_scale=0.2):
     tau2_prop = tau2 + tau2_scale * jax.random.normal(tau2_key2)
     new_deltaX = xs[1:] - transition_function(xs[:-1], tau0, tau1, tau2_prop)
     log_prob = 0.5 * x_prec * (jnp.sum(delta_x ** 2) - jnp.sum(new_deltaX ** 2))
-    log_prob = log_prob + log_prob(tau2_prior.logpdf(tau2_prop) - tau2_prior.logpdf(tau2))
-    if jnp.log(u) < log_prob:
-        tau2 = tau2_prop
-    else:
-        tau2 = tau2
-
+    log_prob = log_prob + tau2_prior.log_prob(tau2_prop) - tau2_prior.log_prob(tau2)
+    tau2 = jax.lax.cond(jnp.log(u) < log_prob, lambda _: tau2_prop, lambda _: tau2, None)
+    # return x_prec, y_prec, 1., 1., tau2
     # Jointly sample from tau1 and tau2
     features = jnp.stack([jnp.ones((T - 1,)), -jnp.exp(tau2 * xs[:-1])], axis=-1)
-    xtx = features.T @ features
-    beta_ols = jnp.linalg.solve(xtx, features.T @ diff_xs)  # least squares
-
+    beta_ols, _, rank, singular = jnp.linalg.lstsq(features, diff_xs)  # least squares solution
     prior_mean = jnp.array([tau0_prior.loc, tau1_prior.loc])
-    prior_prec = jnp.diag([1 / tau0_prior.scale ** 2, 1 / tau1_prior.scale ** 2])
+    prior_prec = jnp.diag(jnp.array([1 / tau0_prior.scale ** 2, 1 / tau1_prior.scale ** 2]))
+
+    xtx = features.T @ features
     post_prec = prior_prec + x_prec * xtx
 
-    post_cov = jnp.linalg.pinv(post_prec)
+    post_cov = jnp.linalg.inv(post_prec)
     post_mean = prior_prec @ prior_mean + x_prec * post_cov @ xtx @ beta_ols
     post_chol = jnp.linalg.cholesky(post_cov)
 
     def tau01_sample_loop(carry):
         _, _, op_key = carry
         next_key, sample_key = jax.random.split(op_key, 2)
-        prop = post_mean + post_chol @ jax.random.normal(sample_key, shape=(2,))
-
+        eps = jax.random.normal(sample_key, shape=(2,))
+        prop = post_mean + post_chol @ eps
         return prop[0], prop[1], next_key
 
-    tau0, tau1, _ = jax.lax.while_loop(lambda prop_tau0, prop_tau1, _: jnp.logical_or(prop_tau0 <= 0, prop_tau1 <= 0),
+    def cond_fun(carry):
+        return (carry[0] <= 0) | (carry[1] <= 0)
+
+    tau0, tau1, _ = jax.lax.while_loop(cond_fun,
                                        tau01_sample_loop,
                                        (-1., -1., tau01_key)
                                        )
@@ -194,10 +209,10 @@ def sample_params(key, tau0, tau1, tau2, sampled_traj, tau2_scale=0.2):
     return x_prec, y_prec, tau0, tau1, tau2
 
 
-@partial(jax.jit, static_argnums=(1, 2))
+@partial(jax.jit, static_argnums=(1,))
 def gibbs_routine(rng_key, n_iter):
     def count_rejuvenate(origins):
-        return np.sum(origins != 0, axis=1)
+        return jnp.sum(origins != 0, axis=1)
 
     init_key, rng_key = jax.random.split(rng_key)
     init_x_prec_key, init_y_prec_key, init_tau0_key, init_tau1_key, init_tau2_key = jax.random.split(init_key, 5)
@@ -214,7 +229,9 @@ def gibbs_routine(rng_key, n_iter):
     init_traj = init_trajs.trajectories[:, jax.random.randint(traj_key, (), 0, N)]  # unconditional
 
     def body(carry, inps):
+
         i, curr_key = inps
+
         param_sampling_key, traj_sampling_key = jax.random.split(curr_key)
         curr_x_prec, curr_y_prec, curr_tau0, curr_tau1, curr_tau2, curr_traj, curr_smoother_init = carry
         next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2 = sample_params(
@@ -233,12 +250,20 @@ def gibbs_routine(rng_key, n_iter):
     keys = jax.random.split(gibbs_key, n_iter)
     carry_init = init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2, init_traj, smoother_init
     _, (x_precs, y_precs, tau0s, tau1s, tau2s, trajs, rejuvenated_stats) = jax.lax.scan(body, carry_init,
-                                                                                        (jnp.arange(n_iter), keys))
+                                                                                        (jnp.arange(n_iter), keys),
+                                                                                        disable_jit=False)
     return x_precs, y_precs, tau0s, tau1s, tau2s, trajs, rejuvenated_stats
 
 
 init_key, gibbs_key = jax.random.split(jax_key)
+x_prec_samples, *_ = gibbs_routine(
+    gibbs_key, B)
+x_prec_samples.block_until_ready()
 
-particle_smoothing_result, rejuvenation_logs = gibbs_routine(gibbs_key, B)
-plt.plot(np.arange(T + 1), rejuvenation_logs.mean(0))
+tic = time.time()
+x_prec_samples, y_prec_samples, tau0_samples, tau1_samples, tau2_samples, traj_samples, rejuvenated_logs = gibbs_routine(
+    gibbs_key, B)
+toc = time.time()
+plt.plot(np.arange(T), rejuvenated_logs.mean(0) / (N - 1))
+plt.title(f"Update rate for each time step, total run time: {toc - tic}, number of iterations: {B}")
 plt.show()

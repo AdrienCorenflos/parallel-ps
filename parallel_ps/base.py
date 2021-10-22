@@ -289,8 +289,9 @@ class KalmanSmootherDensity(DensityModel):
     """
     A density model that uses a precomputed Kalman smoother solutions.
     """
+
     def __init__(self, means, chols):
-        DensityModel.__init__(self, (means, chols), (True, True))
+        DensityModel.__init__(self, (means, chols), (True, True), T=means.shape[0])
 
     def log_potential(self, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mean, chol = parameter
