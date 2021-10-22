@@ -9,7 +9,9 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
+import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
+from jax.experimental.host_callback import id_tap
 from matplotlib import pyplot as plt
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
@@ -22,16 +24,19 @@ from parsmooth.linearization import extended
 from parsmooth.methods import iterated_smoothing
 from tests.lgssm import mvn_loglikelihood
 
+sns.set_theme()
+
 # IMPORTS
 
 # CONFIG
 warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
-# jax.config.update("jax_disable_jit", True)
-jax.config.update("jax_platform_name", "gpu")
+backend = "gpu"
 # Particle smoother config
 
-N = 25  # Number of particles
-B = 1_000  # Number of time steps in the chain
+N = 50  # Number of particles
+B = 10 ** 5  # Number of time steps in the chain
+BURN_IN = B // 10  # Discarded number of steps for stats
+KALMAN_N_ITER = 3
 
 uniform = False  # use a uniform (random) grid to sample the proposals
 min_uniform = 0.
@@ -128,7 +133,7 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init=None, traj=None):
                                                    MVNSqrt(zero, chol_R))
         kalman_smoothing_solution = iterated_smoothing(data, MVNSqrt(m0, chol_P0), kalman_transition_model,
                                                        kalman_observation_model, extended, smoother_init,
-                                                       criterion=lambda i, *_: i < 10)
+                                                       criterion=lambda i, *_: i < KALMAN_N_ITER)
         next_smoother_init = kalman_smoothing_solution
 
         # Parsmooth considers that the first step is always a prediction, so we need to get rid of it via a vile hack.
@@ -209,7 +214,7 @@ def sample_params(key, tau0, tau1, tau2, sampled_traj):
     return x_prec, y_prec, tau0, tau1, tau2
 
 
-@partial(jax.jit, static_argnums=(1,))
+@partial(jax.jit, static_argnums=(1,), backend=backend)
 def gibbs_routine(rng_key, n_iter):
     def count_rejuvenate(origins):
         return jnp.sum(origins != 0, axis=1)
@@ -232,6 +237,15 @@ def gibbs_routine(rng_key, n_iter):
 
         i, curr_key = inps
 
+        def _print_fun(j, _):
+            # Handmade progress bar function
+            if j + 1 == n_iter:
+                print(f"\rIteration {j + 1}/{n_iter}", flush=True)
+            else:
+                print(f"\rIteration {j + 1}/{n_iter}", end="", flush=True)
+
+        id_tap(_print_fun, i)
+
         param_sampling_key, traj_sampling_key = jax.random.split(curr_key)
         curr_x_prec, curr_y_prec, curr_tau0, curr_tau1, curr_tau2, curr_traj, curr_smoother_init = carry
         next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2 = sample_params(
@@ -250,20 +264,37 @@ def gibbs_routine(rng_key, n_iter):
     keys = jax.random.split(gibbs_key, n_iter)
     carry_init = init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2, init_traj, smoother_init
     _, (x_precs, y_precs, tau0s, tau1s, tau2s, trajs, rejuvenated_stats) = jax.lax.scan(body, carry_init,
-                                                                                        (jnp.arange(n_iter), keys),
-                                                                                        disable_jit=False)
+                                                                                        (jnp.arange(n_iter), keys), )
     return x_precs, y_precs, tau0s, tau1s, tau2s, trajs, rejuvenated_stats
 
 
 init_key, gibbs_key = jax.random.split(jax_key)
-x_prec_samples, *_ = gibbs_routine(
-    gibbs_key, B)
-x_prec_samples.block_until_ready()
 
 tic = time.time()
 x_prec_samples, y_prec_samples, tau0_samples, tau1_samples, tau2_samples, traj_samples, rejuvenated_logs = gibbs_routine(
     gibbs_key, B)
+x_prec_samples.block_until_ready()
 toc = time.time()
+
+x_prec_samples = x_prec_samples[BURN_IN:]
+y_prec_samples = y_prec_samples[BURN_IN:]
+tau0_samples = tau0_samples[BURN_IN:]
+tau1_samples = tau1_samples[BURN_IN:]
+tau2_samples = tau2_samples[BURN_IN:]
+rejuvenated_logs = rejuvenated_logs[BURN_IN:]
+traj_samples = traj_samples[BURN_IN:]
+
+np.savez("./output/theta-logistic-experiment", x_prec_samples=x_prec_samples, y_prec_samples=y_prec_samples,
+         tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
+         rejuvenated_logs=rejuvenated_logs,
+         traj_samples=traj_samples)
+
 plt.plot(np.arange(T), rejuvenated_logs.mean(0) / (N - 1))
-plt.title(f"Update rate for each time step, total run time: {toc - tic}, number of iterations: {B}")
+plt.title(f"Update rate per time step, run time: {toc - tic:.2f}, n iter: {B}")
+plt.show()
+
+sns.jointplot(x=tau1_samples, y=tau0_samples)
+plt.show()
+
+sns.jointplot(x=tau2_samples, y=tau0_samples)
 plt.show()
