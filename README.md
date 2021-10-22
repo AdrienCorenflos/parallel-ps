@@ -36,14 +36,14 @@ If you simply want to use it as part of your own code, then we recommend the fol
    for example).
 2. Install your required version of JAX:
     * GPU (preferred): at the time of writing JAX **only supports the GPU backend for linux distributions**. You will
-      need to make sure you have the proper CUDA (at the time of writing 11.4) version installed and then run (at the
+      need to make sure you have the proper CUDA (at the time of writing 11.5) version installed and then run (at the
       time of writing)
       ```bash
       pip install --upgrade pip
-      pip install --upgrade "jax[cuda111]" -f https://storage.googleapis.com/jax-releases/jax_releases.html  # Note: wheels only available on linux.
+      pip install --upgrade "jax[cuda]" -f https://storage.googleapis.com/jax-releases/jax_releases.html --ignore-installed # Note: wheels only available on linux.
       ```
     * CPU (no support for parallelisation): at the time of writing this is supported for **linux and MacOS** users only.
-      Run (at the time of writing)
+      This should already be taken care of by the `chex` package requirement, but, if not, run (at the time of writing)
     ```bash
      pip install --upgrade pip
      pip install --upgrade "jax[cpu]"

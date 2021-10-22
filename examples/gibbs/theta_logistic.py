@@ -13,6 +13,7 @@ import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
 from jax.experimental.host_callback import id_tap
 from matplotlib import pyplot as plt
+from statsmodels.tsa.stattools import acf
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
     TransitionKernel, InitialModel, InitObservationPotential
@@ -34,13 +35,13 @@ backend = "gpu"
 # Particle smoother config
 
 N = 50  # Number of particles
-B = 10 ** 5  # Number of time steps in the chain
+B = 10 ** 4  # Number of time steps in the chain
 BURN_IN = B // 10  # Discarded number of steps for stats
-KALMAN_N_ITER = 3
+KALMAN_N_ITER = 2
 
-uniform = False  # use a uniform (random) grid to sample the proposals
-min_uniform = 0.
-max_uniform = 10.
+use_kalman = True  # use an iterated Kalman smoother to sample the proposals
+std_dev_around_obs = 1.5
+
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
@@ -74,7 +75,7 @@ m0 = jnp.zeros((1,))
 chol_P0 = jnp.eye(1)
 
 # Other config
-jax_seed = 123456
+jax_seed = 42
 jax_key = jax.random.PRNGKey(jax_seed)
 
 
@@ -85,15 +86,14 @@ class NutModel(UnivariatePotentialModel):
         return mvn_loglikelihood(particles, *parameter)
 
 
-class UniformDensityModel(DensityModel):
-    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        min_, max_ = parameter
-        return 1 / (max_ - min_)
+class MeanCovModel(DensityModel):
+    def log_potential(self, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
+        std, y_t = parameter
+        return mvn_loglikelihood(particle, jnp.atleast_1d(y_t), jnp.atleast_2d(std))
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
-        min_, max_ = self.parameters
-        uniforms = jax.random.uniform(key, (self.T, N, 1))
-        return min_ + (max_ - min_) * uniforms
+        std, y_t = self.parameters
+        return y_t[:, None, :] + std * jax.random.uniform(key, (self.T, N, 1))
 
 
 @jax.jit
@@ -119,8 +119,8 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init=None, traj=None):
     chol_Q = jnp.array([[q]])
     chol_R = jnp.array([[1 / y_prec ** 0.5]])
 
-    if uniform:
-        q_t = UniformDensityModel((min_uniform, max_uniform), (False, False))
+    if not use_kalman:
+        q_t = MeanCovModel((std_dev_around_obs, data), (False, True), T)
         next_smoother_init = None
 
     else:
@@ -284,7 +284,8 @@ tau2_samples = tau2_samples[BURN_IN:]
 rejuvenated_logs = rejuvenated_logs[BURN_IN:]
 traj_samples = traj_samples[BURN_IN:]
 
-np.savez("./output/theta-logistic-experiment", x_prec_samples=x_prec_samples, y_prec_samples=y_prec_samples,
+np.savez(f"./output/theta-logistic-experiment-{use_kalman}", x_prec_samples=x_prec_samples,
+         y_prec_samples=y_prec_samples,
          tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
          rejuvenated_logs=rejuvenated_logs,
          traj_samples=traj_samples)
@@ -297,4 +298,24 @@ sns.jointplot(x=tau1_samples, y=tau0_samples)
 plt.show()
 
 sns.jointplot(x=tau2_samples, y=tau0_samples)
+plt.show()
+
+fig, axes = plt.subplots(ncols=3, nrows=2, figsize=(12, 10))
+
+
+def plot_acf(arr, ax, label):
+    acf_data = acf(arr, nlags=100)
+    ax.plot(acf_data, label=label)
+    ax.set_xlabel("lag")
+    ax.set_ylim(0, 1)
+    ax.legend()
+
+
+plot_acf(x_prec_samples, axes[1, 0], r"$1/\sigma_X^2$")
+plot_acf(y_prec_samples, axes[1, 1], r"$1/\sigma_Y^2$")
+plot_acf(tau0_samples, axes[0, 0], r"$\tau_0$")
+plot_acf(tau1_samples, axes[0, 1], r"$\tau_1$")
+plot_acf(tau2_samples, axes[0, 2], r"$\tau_2$")
+plot_acf(traj_samples[:, 0, 0], axes[1, 2], r"$x_0$")
+
 plt.show()

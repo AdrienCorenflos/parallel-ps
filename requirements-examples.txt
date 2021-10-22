@@ -1,3 +1,5 @@
 matplotlib
 numba
 seaborn
+statsmodels
+tfp-nightly
