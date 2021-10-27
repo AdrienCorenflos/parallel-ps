@@ -14,8 +14,8 @@ import tensorflow_probability.substrates.jax as tfp
 from jax.experimental.host_callback import id_tap, id_print
 from matplotlib import pyplot as plt
 from parsmooth.parallel import ieks
-# from parsmooth.sequential import ieks
 from parsmooth.utils import MVNormalParameters
+from statsmodels.tsa.stattools import acf
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
     TransitionKernel, InitialModel, InitObservationPotential
@@ -34,15 +34,15 @@ warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings
 backend = "gpu"
 # Particle smoother config
 
-N = 50  # Number of particles
+N = 10  # Number of particles
 B = 10 ** 5  # Number of time steps in the chain
 BURN_IN = B // 10  # Discarded number of steps for stats
 KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
 KALMAN_N_ITER_INIT = 50  # Number of iterations to find initial proposal q_t to start the sampling process
 
-uniform = False  # use a uniform (random) grid to sample the proposals
-min_uniform = 0.
-max_uniform = 10.
+use_kalman = False  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
+std_dev_around_obs = 1.5
+
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
@@ -54,6 +54,14 @@ tau0_prior = tfp.distributions.TruncatedNormal(0., 1., 0., 3.)
 tau1_prior = tfp.distributions.TruncatedNormal(0., 1., 0., 3.)
 tau2_prior = tfp.distributions.TruncatedNormal(0., 1., 0., 3.)
 tau2_scale = 0.2  # scale used for the RMH proposal in tau2
+
+# State priors
+m0 = jnp.zeros((1,))
+chol_P0 = jnp.eye(1)
+
+# Other config
+jax_seed = 0
+jax_key = jax.random.PRNGKey(jax_seed)
 
 
 # Utility functions to compute posteriors
@@ -71,31 +79,11 @@ def truncated_normal_posterior(dist: tfp.distributions.TruncatedNormal, xs, s=1.
     return tfp.distributions.TruncatedNormal(loc, scale=np.sqrt(var), low=dist.low, high=dist.high)
 
 
-# State priors
-m0 = jnp.zeros((1,))
-chol_P0 = jnp.eye(1)
-
-# Other config
-jax_seed = 0
-jax_key = jax.random.PRNGKey(jax_seed)
-
-
 # DEFINE nu_t and q_t
 
 class NutModel(UnivariatePotentialModel):
     def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         return mvn_loglikelihood(particles, *parameter)
-
-
-class UniformDensityModel(DensityModel):
-    def log_potential(self, particles: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        min_, max_ = parameter
-        return 1 / (max_ - min_)
-
-    def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
-        min_, max_ = self.parameters
-        uniforms = jax.random.uniform(key, (self.T, N, 1))
-        return min_ + (max_ - min_) * uniforms
 
 
 def spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter):
@@ -129,8 +117,9 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
     r = 1 / y_prec ** 0.5
     chol_Q = jnp.array([[q]])
     chol_R = jnp.array([[r]])
-    if uniform:
-        q_t = UniformDensityModel((min_uniform, max_uniform), (False, False))
+
+    if not use_kalman:
+        q_t = GaussianDensity(jnp.atleast_2d(data), std_dev_around_obs * jnp.ones((T, 1, 1)))
         next_smoother_init = None
 
     else:
@@ -293,7 +282,8 @@ tau2_samples = tau2_samples[BURN_IN:]
 rejuvenated_logs = rejuvenated_logs[BURN_IN:]
 traj_samples = traj_samples[BURN_IN:]
 
-np.savez("./output/theta-logistic-experiment", x_prec_samples=x_prec_samples, y_prec_samples=y_prec_samples,
+np.savez(f"./output/theta-logistic-experiment-{use_kalman}", x_prec_samples=x_prec_samples,
+         y_prec_samples=y_prec_samples,
          tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
          rejuvenated_logs=rejuvenated_logs,
          traj_samples=traj_samples)
@@ -306,4 +296,24 @@ sns.jointplot(x=tau1_samples, y=tau0_samples)
 plt.show()
 
 sns.jointplot(x=tau2_samples, y=tau0_samples)
+plt.show()
+
+fig, axes = plt.subplots(ncols=3, nrows=2, figsize=(12, 10))
+
+
+def plot_acf(arr, ax, label):
+    acf_data = acf(arr, nlags=100)
+    ax.plot(acf_data, label=label)
+    ax.set_xlabel("lag")
+    ax.set_ylim(0, 1)
+    ax.legend()
+
+
+plot_acf(x_prec_samples, axes[1, 0], r"$1/\sigma_X^2$")
+plot_acf(y_prec_samples, axes[1, 1], r"$1/\sigma_Y^2$")
+plot_acf(tau0_samples, axes[0, 0], r"$\tau_0$")
+plot_acf(tau1_samples, axes[0, 1], r"$\tau_1$")
+plot_acf(tau2_samples, axes[0, 2], r"$\tau_2$")
+plot_acf(traj_samples[:, 0, 0], axes[1, 2], r"$x_0$")
+
 plt.show()
