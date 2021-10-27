@@ -2,3 +2,5 @@ git+https://github.com/EEA-sensors/parallel-non-linear-gaussian-smoothers.git@v1
 matplotlib
 numba
 seaborn
+statsmodels
+tfp-nightly
