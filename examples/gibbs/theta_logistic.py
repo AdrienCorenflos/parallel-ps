@@ -11,24 +11,25 @@ import jax.numpy as jnp
 import numpy as np
 import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
-from jax.experimental.host_callback import id_tap
+from jax.experimental.host_callback import id_tap, id_print
 from matplotlib import pyplot as plt
+from parsmooth.parallel import ieks
+# from parsmooth.sequential import ieks
+from parsmooth.utils import MVNormalParameters
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
     TransitionKernel, InitialModel, InitObservationPotential
-from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, KalmanSmootherDensity
+from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, GaussianDensity
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
-from parsmooth import MVNSqrt, FunctionalModel
-from parsmooth.linearization import extended
-from parsmooth.methods import iterated_smoothing
-from tests.lgssm import mvn_loglikelihood
+from parallel_ps.utils import mvn_loglikelihood
 
 sns.set_theme()
 
 # IMPORTS
 
 # CONFIG
+jax.config.update("jax_disable_jit", False)
 warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
 backend = "gpu"
 # Particle smoother config
@@ -36,7 +37,8 @@ backend = "gpu"
 N = 50  # Number of particles
 B = 10 ** 5  # Number of time steps in the chain
 BURN_IN = B // 10  # Discarded number of steps for stats
-KALMAN_N_ITER = 3
+KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
+KALMAN_N_ITER_INIT = 50  # Number of iterations to find initial proposal q_t to start the sampling process
 
 uniform = False  # use a uniform (random) grid to sample the proposals
 min_uniform = 0.
@@ -74,7 +76,7 @@ m0 = jnp.zeros((1,))
 chol_P0 = jnp.eye(1)
 
 # Other config
-jax_seed = 123456
+jax_seed = 0
 jax_key = jax.random.PRNGKey(jax_seed)
 
 
@@ -96,8 +98,15 @@ class UniformDensityModel(DensityModel):
         return min_ + (max_ - min_) * uniforms
 
 
-@jax.jit
-def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init=None, traj=None):
+def spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter):
+    x0 = MVNormalParameters(m0, chol_P0 @ chol_P0.T)
+    partial_transition_function = partial(transition_function, tau_0=tau0, tau_1=tau1, tau_2=tau2)
+    return ieks(x0, data, partial_transition_function, Q, observation_function, R,
+                smoother_init, n_iter, propagate_first=False)
+
+
+@partial(jax.jit, static_argnums=(6,))
+def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, traj=None):
     """
     Run a conditional dSMC
 
@@ -106,6 +115,8 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init=None, traj=None):
     key: ...
     x_prec, y_prec, tau0, tau1, tau2: float
         ...
+    n_iter:
+        Number of iterations for the kalman smoother (if used at all)
     smoother_init
     traj: ...
 
@@ -114,31 +125,28 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, smoother_init=None, traj=None):
     ...
     """
 
-    zero = jnp.zeros((1,))
     q = 1 / x_prec ** 0.5
+    r = 1 / y_prec ** 0.5
     chol_Q = jnp.array([[q]])
-    chol_R = jnp.array([[1 / y_prec ** 0.5]])
-
+    chol_R = jnp.array([[r]])
     if uniform:
         q_t = UniformDensityModel((min_uniform, max_uniform), (False, False))
         next_smoother_init = None
 
     else:
         if smoother_init is None:
-            smoother_init = MVNSqrt(jnp.concatenate([jnp.zeros((1, 1)), data]),
-                                    1e-1 * jnp.ones((T + 1, 1, 1)))
-        kalman_transition_model = FunctionalModel(lambda x, q_val: transition_function(x, tau0, tau1, tau2) + q_val,
-                                                  MVNSqrt(zero, chol_Q))
-        kalman_observation_model = FunctionalModel(lambda x, r_val: observation_function(x) + r_val,
-                                                   MVNSqrt(zero, chol_R))
-        kalman_smoothing_solution = iterated_smoothing(data, MVNSqrt(m0, chol_P0), kalman_transition_model,
-                                                       kalman_observation_model, extended, smoother_init,
-                                                       criterion=lambda i, *_: i < KALMAN_N_ITER)
-        next_smoother_init = kalman_smoothing_solution
+            smoother_init = MVNormalParameters(data,
+                                               1e-1 * jnp.ones((T, 1, 1)))
 
+        R = chol_R @ chol_R.T
+        Q = chol_Q @ chol_Q.T
+
+        next_smoother_init = spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter)
         # Parsmooth considers that the first step is always a prediction, so we need to get rid of it via a vile hack.
         # It's fine as it is only the proposal q_t, but it's suboptimal. Need to fix this.
-        q_t = KalmanSmootherDensity(*jax.tree_map(lambda z: z[1:], kalman_smoothing_solution))
+        kalman_mean, kalman_covs = next_smoother_init
+        kalman_chols = kalman_covs ** 0.5  # Achtung: This only works because the state has one dimension !!!!
+        q_t = GaussianDensity(kalman_mean, kalman_chols)
     nu_t = q_t
 
     gen_observation_potential = ObservationPotential(chol_R, data[1:])
@@ -228,7 +236,8 @@ def gibbs_routine(rng_key, n_iter):
     init_tau1 = tau1_prior.sample(seed=init_tau1_key)
     init_tau2 = tau2_prior.sample(seed=init_tau2_key)
 
-    init_trajs, smoother_init = cdsmc(init_key, init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2, None, None)
+    init_trajs, smoother_init = cdsmc(init_key, init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2,
+                                      KALMAN_N_ITER_INIT, None, None)
 
     traj_key, rng_key = jax.random.split(rng_key)
     init_traj = init_trajs.trajectories[:, jax.random.randint(traj_key, (), 0, N)]  # unconditional
@@ -254,7 +263,7 @@ def gibbs_routine(rng_key, n_iter):
         sample_key, select_key = jax.random.split(traj_sampling_key)
 
         traj_samples, next_smoother_init = cdsmc(sample_key, next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2,
-                                                 curr_smoother_init, curr_traj)
+                                                 KALMAN_N_ITER, curr_smoother_init, curr_traj)
         rejuvenated = count_rejuvenate(traj_samples.origins)
         next_traj = traj_samples.trajectories[:, jax.random.randint(select_key, (), 0, N - 1)]
         next_carry = next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2, next_traj, next_smoother_init
@@ -290,7 +299,7 @@ np.savez("./output/theta-logistic-experiment", x_prec_samples=x_prec_samples, y_
          traj_samples=traj_samples)
 
 plt.plot(np.arange(T), rejuvenated_logs.mean(0) / (N - 1))
-plt.title(f"Update rate per time step, run time: {toc - tic:.2f}, n iter: {B}")
+plt.title(f"Update rate per time step, run time: {toc - tic:.0f}s, n iter: {B}")
 plt.show()
 
 sns.jointplot(x=tau1_samples, y=tau0_samples)

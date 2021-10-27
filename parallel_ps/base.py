@@ -28,7 +28,7 @@ import jax.numpy as jnp
 from jax import numpy as jnp, tree_unflatten, tree_flatten
 from jax.scipy.special import logsumexp
 
-from parsmooth._utils import mvn_loglikelihood
+from parallel_ps.utils import mvn_loglikelihood
 
 PyTree = TypeVar("PyTree", bound=Union[jnp.ndarray, NamedTuple, Tuple, List, Dict, bool, float, None])
 
@@ -285,7 +285,7 @@ class NullPotentialModel(UnivariatePotentialModel):
         return 0.
 
 
-class KalmanSmootherDensity(DensityModel):
+class GaussianDensity(DensityModel):
     """
     A density model that uses a precomputed Kalman smoother solutions.
     """
@@ -295,7 +295,7 @@ class KalmanSmootherDensity(DensityModel):
 
     def log_potential(self, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mean, chol = parameter
-        return mvn_loglikelihood(particle - mean, chol)
+        return mvn_loglikelihood(particle, mean, chol)
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         means, chols = self.parameters

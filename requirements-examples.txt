@@ -1,3 +1,4 @@
+git+https://github.com/EEA-sensors/parallel-non-linear-gaussian-smoothers.git@v1.1#egg=parsmooth
 matplotlib
 numba
 seaborn

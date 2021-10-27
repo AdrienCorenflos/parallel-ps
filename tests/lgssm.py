@@ -1,20 +1,9 @@
 import chex
 import jax.numpy as jnp
-import jax.scipy.linalg
 import numpy as np
 
 from parallel_ps.base import BivariatePotentialModel, PyTree
-
-
-def mvn_loglikelihood(x, mean, chol_cov):
-    """multivariate normal"""
-    dim = chol_cov.shape[0]
-    y = jax.scipy.linalg.solve_triangular(chol_cov, x - mean, lower=True)
-    normalizing_constant = (
-            jnp.sum(jnp.log(jnp.abs(jnp.diag(chol_cov)))) + dim * jnp.log(2 * jnp.pi) / 2.0
-    )
-    norm_y = jnp.sum(y * y, -1)
-    return -0.5 * norm_y - normalizing_constant
+from parallel_ps.utils import mvn_loglikelihood
 
 
 def _lgssm_log_potential_one(x, y, F, b, cholQ):

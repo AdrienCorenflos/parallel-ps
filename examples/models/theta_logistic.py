@@ -6,7 +6,7 @@ import chex
 import jax.numpy as jnp
 
 from parallel_ps.base import BivariatePotentialModel, PyTree, UnivariatePotentialModel
-from tests.lgssm import mvn_loglikelihood
+from parallel_ps.utils import mvn_loglikelihood
 
 
 class InitialModel(UnivariatePotentialModel):
