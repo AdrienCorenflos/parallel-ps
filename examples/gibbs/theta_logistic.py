@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
-from jax.experimental.host_callback import id_tap, id_print
+from jax.experimental.host_callback import id_tap
 from matplotlib import pyplot as plt
 from parsmooth.parallel import ieks
 from parsmooth.utils import MVNormalParameters
@@ -19,12 +19,13 @@ from statsmodels.tsa.stattools import acf
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
     TransitionKernel, InitialModel, InitObservationPotential
-from parallel_ps.base import DensityModel, PyTree, UnivariatePotentialModel, GaussianDensity
+from parallel_ps.base import  PyTree, UnivariatePotentialModel, GaussianDensity
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parallel_ps.utils import mvn_loglikelihood
 
 sns.set_theme()
+
 
 # IMPORTS
 

@@ -1,12 +1,14 @@
-# from tqdm.contrib.itertools import product
-from itertools import product
+from functools import reduce
+from operator import mul
+
+from tqdm.contrib.itertools import product
+# from itertools import product
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from parsmooth.sequential import ekf, eks  # sequential cause we need the log-likelihood just for the experiment.
 from parsmooth.utils import MVNormalParameters
-from scipy.stats import describe
 
 from examples.models.lgssm import get_data, LinearGaussianObservationModel, LinearGaussianTransitionModel
 from parallel_ps.base import GaussianDensity, NullPotentialModel
@@ -26,8 +28,8 @@ dims_y = [1, 2, 3]
 sigmas_x = np.logspace(-2, 0, 4)
 sigmas_y = np.logspace(-2, 0, 4)
 
-Ts = [100, 1_000, 10_000]
-Ns = [25, 50, 100]
+Ts = [2 ** k - 1 for k in range(2, 14, 3)]
+Ns = [25, 50]
 
 # data seed
 np.random.seed(0)
@@ -113,7 +115,7 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
         for j, (ys, smoothing_mean, smoothing_cov) in enumerate(
                 zip(batch_ys, kalman_smoothing_means, kalman_smoothing_covs)):
             ps_results[i, j], ps_origins = one_smoother(jax_key, ys, (smoothing_mean, smoothing_cov))
-            for t in range(T+1):
+            for t in range(T + 1):
                 ps_unique_ancestors[i, j, t] = len(np.unique(ps_origins[t]))
 
     ps_ell_means = ps_results.mean(0)
@@ -123,37 +125,37 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
     return kalman_ells, ps_ell_means, ps_ell_vars, ps_unique_ancestors
 
 
-experiments_results = dict()
+shape = (len(dims_x), len(dims_y), len(sigmas_x), len(sigmas_y), len(Ts), len(Ns))
+kalman_ells = np.empty(shape)
+ps_ell_means = np.empty(shape)
+rel_ell_means = np.empty(shape)
+ps_ell_vars = np.empty(shape)
+ps_ell_stds = np.empty(shape)
+ps_unique_ancestors_min = np.empty(shape)
+ps_unique_ancestors_mean = np.empty(shape)
+ps_unique_ancestors_max = np.empty(shape)
 
-for dim_x, dim_y, sigma_x, sigma_y in product(dims_x, dims_y, sigmas_x, sigmas_y):
-    print(dim_x, dim_y, sigma_x, sigma_y)
-    kalman_ells = np.empty((len(Ts), len(Ns), n_data))
-    ps_ell_means = np.empty((len(Ts), len(Ns), n_data))
-    ps_ell_vars = np.empty((len(Ts), len(Ns), n_data))
-    experiments_results[(dim_x, dim_y, sigma_x, sigma_y)] = kalman_ells, ps_ell_means, ps_ell_vars
-    # for (i, T), (j, N) in product(enumerate(Ts), enumerate(Ns), leave=False, total=len(Ts) * len(Ns)):  # tqdm version
-    for (i, T), (j, N) in product(enumerate(Ts), enumerate(Ns)):
-        result = experiment(dim_x, dim_y, sigma_x, sigma_y, T, N)
-        kalman_ells[i, j, :], ps_ell_means[i, j, :], ps_ell_vars[i, j, :], ps_unique_ancestors = result
-        print(T, N)
-        print("Relative diff mean", np.mean((kalman_ells[i, j, :] - ps_ell_means[i, j, :]) / kalman_ells[i, j, :],
-                                            axis=-1))
-        print("Diff mean", np.mean((kalman_ells[i, j, :] - ps_ell_means[i, j, :]), axis=-1))
-        print("PS ell std", np.mean(ps_ell_vars[i, j, :] ** 0.5, axis=-1))
-        print("Diff mean corrected", np.mean((kalman_ells[i, j, :] - ps_ell_means[i, j, :] - ps_ell_vars[i, j, :] / 2),
-                                             axis=-1))
-        print("Unique origins stats", ps_unique_ancestors.mean(), ps_unique_ancestors.min(), ps_unique_ancestors.max())
+indices = np.recarray(shape + (6,),
+                      dtype=[('dim_x', int), ('dim_y', int), ("sigma_x", float), ("sigma_y", float), ("T", int),
+                             ("N", int)])
 
-    print()
+for (i, dim_x), (j, dim_y), (k, sigma_x), (l, sigma_y), (m, T), (n, N) in product(
+        *map(enumerate, [dims_x, dims_y, sigmas_x, sigmas_y, Ts, Ns]), total=reduce(mul, shape)):
+    curr_kalman_ells, curr_ps_ell_means, curr_ps_ell_vars, ps_unique_ancestors = experiment(dim_x, dim_y, sigma_x,
+                                                                                            sigma_y, T, N)
 
+    kalman_ells[i, j, k, l, m, n] = np.mean(curr_kalman_ells)
+    ps_ell_means[i, j, k, l, m, n] = np.mean(curr_ps_ell_means)
+    rel_ell_means[i, j, k, l, m, n] = np.mean((curr_kalman_ells - curr_ps_ell_means) / curr_kalman_ells)
+    ps_ell_vars[i, j, k, l, m, n] = np.mean(curr_ps_ell_vars)
+    ps_ell_stds[i, j, k, l, m, n] = np.mean(curr_ps_ell_vars ** 0.5)
+    ps_unique_ancestors_min[i, j, k, l, m, n] = np.min(ps_unique_ancestors)
+    ps_unique_ancestors_mean[i, j, k, l, m, n] = np.mean(ps_unique_ancestors)
+    ps_unique_ancestors_max[i, j, k, l, m, n] = np.max(ps_unique_ancestors)
 
-# for dim_x, dim_y, sigma_x, sigma_y in product(dims_x, dims_y, sigmas_x, sigmas_y):
-#     result = experiments_results[(dim_x, dim_y, sigma_x, sigma_y)]
-#     kalman_ells, ps_ell_means, ps_ell_vars = result
-#
-#     print(dim_x, dim_y, sigma_x, sigma_y)
-#     print(np.mean((kalman_ells - ps_ell_means) / kalman_ells, axis=-1))
-#     print(np.mean((kalman_ells - ps_ell_means), axis=-1))
-#     print(np.std(ps_ell_means, axis=-1))
-#     print(np.mean((kalman_ells - ps_ell_means + ps_ell_vars / 2), axis=-1))
-#     print()
+    indices[i, j, k, l, m, n] = (dim_x, dim_y, sigma_x, sigma_y, T, N)
+
+np.savez("./result_degeneracy", indices=indices, kalman_ells=kalman_ells, ps_ell_means=ps_ell_means,
+         ps_ell_vars=ps_ell_vars, ps_ell_stds=ps_ell_stds, rel_ell_means=rel_ell_means,
+         ps_unique_ancestors_min=ps_unique_ancestors_min, ps_unique_ancestors_mean=ps_unique_ancestors_mean,
+         ps_unique_ancestors_max=ps_unique_ancestors_max)
