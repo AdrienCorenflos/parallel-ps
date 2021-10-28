@@ -4,3 +4,4 @@ numba
 seaborn
 statsmodels
 tfp-nightly
+tqdm
