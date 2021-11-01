@@ -8,6 +8,7 @@ from parsmooth.utils import MVNormalParameters
 
 from parallel_ps.base import NullPotentialModel, GaussianDensity
 from parallel_ps.core.resampling import systematic
+from parallel_ps.ffbs_smoother import smoothing as ffbs_smoothing
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from .lgssm import LinearGaussianObservationModel, LinearGaussianTransitionModel, get_data
 
@@ -22,9 +23,10 @@ def pytest_config():
 @pytest.mark.parametrize("T", [120])
 @pytest.mark.parametrize("np_seed", [1234])
 @pytest.mark.parametrize("jax_seed", [42])
-@pytest.mark.parametrize("N", [50])
+@pytest.mark.parametrize("N", [100])
 @pytest.mark.parametrize("conditional", [True, False])
-def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
+@pytest.mark.parametrize("ffbs", [True, False])
+def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs):
     np.random.seed(np_seed)
     rng_key = jax.random.PRNGKey(jax_seed)
 
@@ -69,13 +71,21 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
                                      jax.vmap(jnp.linalg.cholesky)(kalman_filtering_covs),
                                      )
 
-
     weight_model = GaussianDensity(kalman_smoothing_means,
                                    jax.vmap(jnp.linalg.cholesky)(kalman_smoothing_covs))
 
     initial_model = GaussianDensity(m0, chol_P0)
 
-    if conditional:
+    if ffbs:
+        smoother = jax.vmap(
+            lambda k: ffbs_smoothing(k, proposal_model, transition_model, observation_model, initial_model,
+                                     NullPotentialModel(), N, N))
+
+        smoother_solutions, _, ells = smoother(jax.random.split(rng_key, 10))
+        np.testing.assert_allclose(ells.mean(),
+                                   kalman_ell, rtol=1e-2)
+        smoother_solution = smoother_solutions[0]
+    elif conditional:
         rng_key, gibbs_key = jax.random.split(rng_key)
         init_trajectory = proposal_model.sample(rng_key, 1)[:, 0]
 
@@ -97,8 +107,8 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional):
         np.testing.assert_allclose(smoother_solution[:, 100:].mean(1), kalman_smoothing_solution.mean, rtol=1e-2)
     else:
         smoother = jax.vmap(lambda k: particle_smoothing(k, proposal_model, weight_model,
-                                                        transition_model, observation_model, initial_model,
-                                                        NullPotentialModel(), systematic, N=N))
+                                                         transition_model, observation_model, initial_model,
+                                                         NullPotentialModel(), systematic, N=N))
 
         smoother_solutions = smoother(jax.random.split(rng_key, 10))
         np.testing.assert_allclose(smoother_solutions.ells[:, -1].mean() - smoother_solutions.ells[:, -1].var() / 2,

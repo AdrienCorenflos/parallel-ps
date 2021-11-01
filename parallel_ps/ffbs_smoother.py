@@ -25,11 +25,10 @@ from functools import partial
 import chex
 import jax
 import jax.numpy as jnp
-
 from jax.scipy.special import logsumexp
 
-from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, DSMCState, \
-    NullPotentialModel, split_batched_and_static_params, rejoin_batched_and_static_params
+from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, NullPotentialModel, \
+    split_batched_and_static_params, rejoin_batched_and_static_params
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.smoothing_utils import compute_first_log_weights, make_log_weight_fn_and_params_inputs, \
     log_matvec, none_or_shift, none_or_concat, get_log_weights
@@ -56,11 +55,9 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel,
         The potential function
     M0: UnivariatePotentialModel
         The initial prior distribution of the first time step state
-    G0: UnivariatePotentialModel, optional
+    G0: BivariatePotentialModel, optional
         The potential function for the first time step. If doing smoothing where observation happens at the second
         time step (predict first) then this should encode a 0 potential, which is the default behaviour.
-    resampling_method: callable
-        Resampling method used
     N: int, optional
         Number of particles used for the filtering pass. Default is 100
     M: int, optional
@@ -68,26 +65,35 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel,
 
     Returns
     -------
-    smc_state: DSMCState
-        The final state of the algorithm
+    sampled_traj: jnp.ndarray
+        Trajectories
+    sampled_indices: jnp.ndarray
+        Indicies corresponding to original samples
+    ell: float
+        loglikelihood estimate
     """
     # In the current state of JAX, you should not JIT a PMAP operation as this induces communication
     # over devices instead of using shared memory.
     if M is None:
         M = N
     filter_key, smoother_key = jax.random.split(key, 2)
-    filter_trajectories, filter_log_weights = _forward_filtering(filter_key,
-                                                                 qt.sample, qt.log_potential, qt.parameters, qt.batched,
-                                                                 Mt.log_potential, Mt.parameters, Mt.batched,
-                                                                 Gt.log_potential, Gt.parameters, Gt.batched,
-                                                                 M0.log_potential, M0.parameters,
-                                                                 G0.log_potential, G0.parameters,
-                                                                 N,
-                                                                 qt.T)
+    filter_trajectories, filter_log_weights, ell = _forward_filtering(filter_key,
+                                                                      qt.sample, qt.log_potential, qt.parameters,
+                                                                      qt.batched,
+                                                                      Mt.log_potential, Mt.parameters, Mt.batched,
+                                                                      Gt.log_potential, Gt.parameters, Gt.batched,
+                                                                      M0.log_potential, M0.parameters,
+                                                                      G0.log_potential, G0.parameters,
+                                                                      N,
+                                                                      qt.T)
 
-    sampled_traj, sampled_indices = _backward_sampling(smoother_key, filter_trajectories, filter_log_weights,
-                                                       Mt.log_potential, Mt.parameters, Mt.batched, M)
-    return sampled_traj, sampled_indices
+    smoother_keys = jax.random.split(smoother_key, M)
+    vmapped_backward_sampling = jax.vmap(lambda k: _backward_sampling(k, filter_trajectories, filter_log_weights,
+                                                                      Mt.log_potential, Mt.parameters, Mt.batched),
+                                         out_axes=1)
+
+    sampled_traj, sampled_indices = vmapped_backward_sampling(smoother_keys)
+    return sampled_traj, sampled_indices, ell
 
 
 @partial(jax.jit, static_argnums=(1, 2, 4, 5, 7, 8, 10, 11, 13, 15, 16))
@@ -136,30 +142,27 @@ def _forward_filtering(key: chex.PRNGKey,
     (_, ell), log_weights = jax.lax.scan(forward_filtering_body, (first_log_weights, ell_0), log_weights_inc)
 
     log_weights = jnp.concatenate([jnp.expand_dims(first_log_weights, 0), log_weights])
-    return trajectories, log_weights
+    return trajectories, log_weights, ell
 
 
-@partial(jax.jit, static_argnums=(3, 5, 6))
+@partial(jax.jit, static_argnums=(3, 5))
 def _backward_sampling(key: chex.PRNGKey,
-                       particles,
-                       log_weights,
-                       Mt_log_potential, Mt_params, Mt_batched_flag,
-                       M: int):
+                       particles, log_weights,
+                       Mt_log_potential, Mt_params, Mt_batched_flag):
     batched_Mt_params, static_Mt_params = split_batched_and_static_params(Mt_params,
                                                                           Mt_batched_flag)
-    T = log_weights.shape[0]
+    T, N = log_weights.shape
     keys = jax.random.split(key, T)
 
-    @partial(jax.vmap, in_axes=(0, None, None))
+    @partial(jax.vmap, in_axes=[0, None, None])
     def vmapped_Mt_log_potential(x_t_1, x_t, Mt_params_t):
         Mt_params_t = rejoin_batched_and_static_params(Mt_params_t, static_Mt_params,
                                                        Mt_batched_flag)
         return Mt_log_potential(x_t_1, x_t, Mt_params_t)
 
-    K_T = multinomial(jnp.exp(log_weights[-1]), keys[-1], M)  # noqa: bad type def in chex. TODO: send a PR.
+    K_T = jax.random.choice(keys[-1], N, (), p=jnp.exp(log_weights[-1]))  # noqa: bad type def in chex. TODO: send a PR.
     x_T = jax.tree_map(lambda x: x[-1, K_T], particles)
 
-    @partial(jax.vmap, in_axes=(0, None))
     def backward_sampling_body(x_t, inputs):
         particles_t_1, M_t_params_t, log_weights_t_1, key = inputs
         smoothing_log_weights = log_weights_t_1 + vmapped_Mt_log_potential(particles_t_1, x_t, M_t_params_t)
@@ -182,4 +185,3 @@ def _backward_sampling(key: chex.PRNGKey,
     sampled_indices = none_or_concat(sampled_indices, K_T, -1)
 
     return sampled_particles, sampled_indices
-

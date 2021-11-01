@@ -30,6 +30,7 @@ sigmas_y = np.logspace(-2, 0, 4)
 
 Ts = [2 ** k - 1 for k in range(2, 14, 3)]
 Ns = [25, 50]
+use_FFBS = False
 
 # data seed
 np.random.seed(0)
