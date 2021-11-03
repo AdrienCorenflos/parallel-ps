@@ -128,5 +128,5 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs):
     plt.plot(xs[:, 0], label="True states", color="C3")
 
     plt.legend()
-    plt.suptitle(f"Gibbs-{conditional}, dim_x-{dim_x}, dim_y-{dim_y}")
+    plt.suptitle(f"FFBS-{ffbs}-Gibbs-{conditional}, dim_x-{dim_x}, dim_y-{dim_y}")
     plt.show()

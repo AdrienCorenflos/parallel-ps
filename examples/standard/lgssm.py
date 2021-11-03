@@ -1,23 +1,25 @@
-from functools import reduce
+import time
+from functools import reduce, partial
 from operator import mul
-
-from tqdm.contrib.itertools import product
-# from itertools import product
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from parsmooth.sequential import ekf, eks  # sequential cause we need the log-likelihood just for the experiment.
 from parsmooth.utils import MVNormalParameters
+from tqdm.contrib.itertools import product
 
 from examples.models.lgssm import get_data, LinearGaussianObservationModel, LinearGaussianTransitionModel
 from parallel_ps.base import GaussianDensity, NullPotentialModel
 from parallel_ps.core.resampling import systematic
+from parallel_ps.ffbs_smoother import smoothing as ffbs_smoothing
 from parallel_ps.parallel_smoother import smoothing
+
+# from itertools import product
 
 # CONFIG
 
-
+backend = "gpu"
 n_data = 10  # number of times the SSM is sampled from per experiment
 n_smoothers = 5  # number of  times we run the smoother on each dataset
 
@@ -84,7 +86,7 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
         (False, False, False)
     )
 
-    @jax.jit
+    @partial(jax.jit, backend=backend)
     def one_smoother(k, ys, kalman_smoothing_sol):
         kalman_smoothing_mean, kalman_smoothing_cov = kalman_smoothing_sol
 
@@ -103,19 +105,30 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
 
         initial_model = GaussianDensity(m0, chol_P0)
 
-        ps_result = smoothing(k, proposal_model, weight_model,
-                              transition_model, observation_model, initial_model,
-                              NullPotentialModel(), systematic, N=N)
+        if use_FFBS:
+            _, sampled_indices, ell = ffbs_smoothing(k, proposal_model,
+                                                     transition_model, observation_model, initial_model,
+                                                     NullPotentialModel(), N=N)
+            return ell, sampled_indices
+        else:
+            ps_result = smoothing(k, proposal_model, weight_model,
+                                  transition_model, observation_model, initial_model,
+                                  NullPotentialModel(), systematic, N=N)
 
-        return ps_result.ells[-1], ps_result.origins
+            return ps_result.ells[-1], ps_result.origins
 
     ps_results = np.empty((len(JAX_KEYS), n_data))
     ps_unique_ancestors = np.empty((len(JAX_KEYS), n_data, T + 1))
+    runtimes = np.empty_like(ps_results)
 
     for i, jax_key in enumerate(JAX_KEYS):
         for j, (ys, smoothing_mean, smoothing_cov) in enumerate(
                 zip(batch_ys, kalman_smoothing_means, kalman_smoothing_covs)):
+            tic = time.time()
             ps_results[i, j], ps_origins = one_smoother(jax_key, ys, (smoothing_mean, smoothing_cov))
+            ps_origins.block_until_ready()
+            toc = time.time()
+            runtimes[i, j] = toc - tic
             for t in range(T + 1):
                 ps_unique_ancestors[i, j, t] = len(np.unique(ps_origins[t]))
 
@@ -123,7 +136,7 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
     ps_ell_vars = ps_results.var(0)
     ps_unique_ancestors = ps_unique_ancestors.mean(0)
 
-    return kalman_ells, ps_ell_means, ps_ell_vars, ps_unique_ancestors
+    return kalman_ells, ps_ell_means, ps_ell_vars, ps_unique_ancestors, np.median(runtimes)
 
 
 shape = (len(dims_x), len(dims_y), len(sigmas_x), len(sigmas_y), len(Ts), len(Ns))
@@ -132,6 +145,7 @@ ps_ell_means = np.empty(shape)
 rel_ell_means = np.empty(shape)
 ps_ell_vars = np.empty(shape)
 ps_ell_stds = np.empty(shape)
+runtime_medians = np.empty(shape)
 ps_unique_ancestors_min = np.empty(shape)
 ps_unique_ancestors_mean = np.empty(shape)
 ps_unique_ancestors_max = np.empty(shape)
@@ -142,8 +156,9 @@ indices = np.recarray(shape + (6,),
 
 for (i, dim_x), (j, dim_y), (k, sigma_x), (l, sigma_y), (m, T), (n, N) in product(
         *map(enumerate, [dims_x, dims_y, sigmas_x, sigmas_y, Ts, Ns]), total=reduce(mul, shape)):
-    curr_kalman_ells, curr_ps_ell_means, curr_ps_ell_vars, ps_unique_ancestors = experiment(dim_x, dim_y, sigma_x,
-                                                                                            sigma_y, T, N)
+    curr_kalman_ells, curr_ps_ell_means, curr_ps_ell_vars, ps_unique_ancestors, runtime = experiment(dim_x, dim_y,
+                                                                                                     sigma_x,
+                                                                                                     sigma_y, T, N)
 
     kalman_ells[i, j, k, l, m, n] = np.mean(curr_kalman_ells)
     ps_ell_means[i, j, k, l, m, n] = np.mean(curr_ps_ell_means)
@@ -153,10 +168,10 @@ for (i, dim_x), (j, dim_y), (k, sigma_x), (l, sigma_y), (m, T), (n, N) in produc
     ps_unique_ancestors_min[i, j, k, l, m, n] = np.min(ps_unique_ancestors)
     ps_unique_ancestors_mean[i, j, k, l, m, n] = np.mean(ps_unique_ancestors)
     ps_unique_ancestors_max[i, j, k, l, m, n] = np.max(ps_unique_ancestors)
-
+    runtime_medians[i, j, k, l, m, n] = runtime
     indices[i, j, k, l, m, n] = (dim_x, dim_y, sigma_x, sigma_y, T, N)
 
-np.savez("./result_degeneracy", indices=indices, kalman_ells=kalman_ells, ps_ell_means=ps_ell_means,
+np.savez(f"./result_degeneracy-{use_FFBS}", indices=indices, kalman_ells=kalman_ells, ps_ell_means=ps_ell_means,
          ps_ell_vars=ps_ell_vars, ps_ell_stds=ps_ell_stds, rel_ell_means=rel_ell_means,
          ps_unique_ancestors_min=ps_unique_ancestors_min, ps_unique_ancestors_mean=ps_unique_ancestors_mean,
-         ps_unique_ancestors_max=ps_unique_ancestors_max)
+         ps_unique_ancestors_max=ps_unique_ancestors_max, runtime_medians=runtime_medians)
