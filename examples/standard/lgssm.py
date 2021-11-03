@@ -70,14 +70,19 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
     observation_function = lambda x: H @ x + c
 
     x0 = MVNormalParameters(m0, P0)
-    kalman_ells, kalman_filtering_solutions = jax.vmap(ekf, in_axes=[None, 0] + [None] * 6)(x0, batch_ys,
-                                                                                            transition_function, Q,
-                                                                                            observation_function, R,
-                                                                                            None, True)
+    jitted_ekf = jax.jit(ekf, static_argnums=(2, 4, 6, 7), backend="cpu")
+    jitted_eks = jax.jit(eks, static_argnums=(0, 3, 4), backend="cpu")
 
-    kalman_smoothing_solutions = jax.vmap(eks, in_axes=[None, None, 0, None, None])(transition_function, Q,
-                                                                                    kalman_filtering_solutions,
-                                                                                    None, True)
+    kalman_ells, kalman_filtering_solutions = jax.vmap(jitted_ekf, in_axes=[None, 0] + [None] * 6)(x0, batch_ys,
+                                                                                                   transition_function,
+                                                                                                   Q,
+                                                                                                   observation_function,
+                                                                                                   R,
+                                                                                                   None, True)
+
+    kalman_smoothing_solutions = jax.vmap(jitted_eks, in_axes=[None, None, 0, None, None])(transition_function, Q,
+                                                                                           kalman_filtering_solutions,
+                                                                                           None, True)
 
     kalman_smoothing_means, kalman_smoothing_covs = kalman_smoothing_solutions
 
@@ -95,9 +100,6 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
                                          jax.vmap(jnp.linalg.cholesky)(kalman_smoothing_cov),
                                          )
 
-        weight_model = GaussianDensity(kalman_smoothing_mean,
-                                       jax.vmap(jnp.linalg.cholesky)(kalman_smoothing_cov))
-
         observation_model = LinearGaussianObservationModel(
             (H, c, chol_R, ys),
             (False, False, False, True)
@@ -111,7 +113,7 @@ def experiment(dim_x, dim_y, sigma_x, sigma_y, T, N):
                                                      NullPotentialModel(), N=N)
             return ell, sampled_indices
         else:
-            ps_result = smoothing(k, proposal_model, weight_model,
+            ps_result = smoothing(k, proposal_model, proposal_model,
                                   transition_model, observation_model, initial_model,
                                   NullPotentialModel(), systematic, N=N)
 
@@ -143,6 +145,7 @@ shape = (len(dims_x), len(dims_y), len(sigmas_x), len(sigmas_y), len(Ts), len(Ns
 kalman_ells = np.empty(shape)
 ps_ell_means = np.empty(shape)
 rel_ell_means = np.empty(shape)
+abs_ell_means = np.empty(shape)
 ps_ell_vars = np.empty(shape)
 ps_ell_stds = np.empty(shape)
 runtime_medians = np.empty(shape)
@@ -163,6 +166,7 @@ for (i, dim_x), (j, dim_y), (k, sigma_x), (l, sigma_y), (m, T), (n, N) in produc
     kalman_ells[i, j, k, l, m, n] = np.mean(curr_kalman_ells)
     ps_ell_means[i, j, k, l, m, n] = np.mean(curr_ps_ell_means)
     rel_ell_means[i, j, k, l, m, n] = np.mean((curr_kalman_ells - curr_ps_ell_means) / curr_kalman_ells)
+    abs_ell_means[i, j, k, l, m, n] = np.mean((curr_kalman_ells - curr_ps_ell_means))
     ps_ell_vars[i, j, k, l, m, n] = np.mean(curr_ps_ell_vars)
     ps_ell_stds[i, j, k, l, m, n] = np.mean(curr_ps_ell_vars ** 0.5)
     ps_unique_ancestors_min[i, j, k, l, m, n] = np.min(ps_unique_ancestors)
@@ -171,7 +175,7 @@ for (i, dim_x), (j, dim_y), (k, sigma_x), (l, sigma_y), (m, T), (n, N) in produc
     runtime_medians[i, j, k, l, m, n] = runtime
     indices[i, j, k, l, m, n] = (dim_x, dim_y, sigma_x, sigma_y, T, N)
 
-np.savez(f"./result_degeneracy-{use_FFBS}", indices=indices, kalman_ells=kalman_ells, ps_ell_means=ps_ell_means,
-         ps_ell_vars=ps_ell_vars, ps_ell_stds=ps_ell_stds, rel_ell_means=rel_ell_means,
+np.savez(f"./result_degeneracy-{use_FFBS}-{backend}", indices=indices, kalman_ells=kalman_ells,
+         ps_ell_means=ps_ell_means, ps_ell_vars=ps_ell_vars, ps_ell_stds=ps_ell_stds, rel_ell_means=rel_ell_means,
          ps_unique_ancestors_min=ps_unique_ancestors_min, ps_unique_ancestors_mean=ps_unique_ancestors_mean,
-         ps_unique_ancestors_max=ps_unique_ancestors_max, runtime_medians=runtime_medians)
+         ps_unique_ancestors_max=ps_unique_ancestors_max, runtime_medians=runtime_medians, abs_ell_means=abs_ell_means)
