@@ -80,21 +80,22 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
                                          trajectories_b, log_weights_b, params_b,
                                          log_weight_fn)
 
-    idx = resampling_method(jnp.ravel(weights), keys_b[0], n_samples)  # shape = N
+    if conditional:
+        idx = resampling_method(jnp.ravel(weights), keys_b[0], n_samples - 1)
+        idx = jnp.insert(idx, 0, 0)
+    else:
+        idx = resampling_method(jnp.ravel(weights), keys_b[0], n_samples)  # shape = N
     l_idx, r_idx = jax.vmap(jnp.unravel_index, in_axes=[0, None])(idx, (n_samples, n_samples))
 
-    return _gather_results(l_idx, r_idx, n_samples, conditional, ell_inc,
+    return _gather_results(l_idx, r_idx, n_samples, ell_inc,
                            trajectories_a, origins_a, ells_a, log_weights_a, keys_a, params_a,
                            trajectories_b, origins_b, ells_b, log_weights_b, keys_b, params_b)
 
 
-def _gather_results(left_idx, right_idx, n_samples, conditional, ell_inc,
+def _gather_results(left_idx, right_idx, n_samples, ell_inc,
                     trajectories_a, origins_a, ells_a, log_weights_a, keys_a, params_a,
                     trajectories_b, origins_b, ells_b, log_weights_b, keys_b, params_b):
     # If we are using conditional dSMC, we need to make sure to preserve the first trajectory.
-    if conditional:
-        right_idx = ops.index_update(right_idx, 0, 0)
-        left_idx = ops.index_update(left_idx, 0, 0)
 
     # Resample the trajectories
 

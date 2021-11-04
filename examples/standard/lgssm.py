@@ -1,3 +1,4 @@
+import os
 import time
 from functools import reduce, partial
 from operator import mul
@@ -175,7 +176,8 @@ for (i, dim_x), (j, dim_y), (k, sigma_x), (l, sigma_y), (m, T), (n, N) in produc
     runtime_medians[i, j, k, l, m, n] = runtime
     indices[i, j, k, l, m, n] = (dim_x, dim_y, sigma_x, sigma_y, T, N)
 
-np.savez(f"./result_degeneracy-{use_FFBS}-{backend}", indices=indices, kalman_ells=kalman_ells,
+os.makedirs("./output", exist_ok=True)
+np.savez(f"./output/result_degeneracy-{use_FFBS}-{backend}", indices=indices, kalman_ells=kalman_ells,
          ps_ell_means=ps_ell_means, ps_ell_vars=ps_ell_vars, ps_ell_stds=ps_ell_stds, rel_ell_means=rel_ell_means,
          ps_unique_ancestors_min=ps_unique_ancestors_min, ps_unique_ancestors_mean=ps_unique_ancestors_mean,
          ps_unique_ancestors_max=ps_unique_ancestors_max, runtime_medians=runtime_medians, abs_ell_means=abs_ell_means)

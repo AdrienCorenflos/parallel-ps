@@ -1,6 +1,7 @@
 """
 Theta-logistic Gibbs sampling experiment design
 """
+import os
 import time
 import warnings
 from functools import partial
@@ -11,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
-from jax.experimental.host_callback import id_tap
+from jax.experimental.host_callback import id_tap, id_print
 from matplotlib import pyplot as plt
 from parsmooth.parallel import ieks
 from parsmooth.utils import MVNormalParameters
@@ -19,18 +20,16 @@ from statsmodels.tsa.stattools import acf
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
     TransitionKernel, InitialModel, InitObservationPotential
-from parallel_ps.base import  PyTree, UnivariatePotentialModel, GaussianDensity
+from parallel_ps.base import PyTree, UnivariatePotentialModel, GaussianDensity
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parallel_ps.utils import mvn_loglikelihood
 
 sns.set_theme()
 
-
 # IMPORTS
 
 # CONFIG
-jax.config.update("jax_disable_jit", False)
 warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
 backend = "gpu"
 # Particle smoother config
@@ -38,11 +37,10 @@ backend = "gpu"
 N = 50  # Number of particles
 B = 10 ** 5  # Number of time steps in the chain
 BURN_IN = B // 10  # Discarded number of steps for stats
-KALMAN_N_ITER = 5  # Number of iterations to find new proposal q_t during the sampling process
-KALMAN_N_ITER_INIT = 50  # Number of iterations to find initial proposal q_t to start the sampling process
+KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
+KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
 use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
-std_dev_around_obs = 1.5
 
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
@@ -113,14 +111,16 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
     -------
     ...
     """
-
-    q = 1 / x_prec ** 0.5
-    r = 1 / y_prec ** 0.5
+    q_2 = 1 / x_prec
+    r_2 = 1 / y_prec
+    q = q_2 ** 0.5
+    r = r_2 ** 0.5
     chol_Q = jnp.array([[q]])
     chol_R = jnp.array([[r]])
-
+    # id_print(jnp.nan)
     if not use_kalman:
-        q_t = GaussianDensity(jnp.atleast_2d(data), std_dev_around_obs * jnp.ones((T, 1, 1)))
+        std_dev = (q_2 + r_2) ** 0.5
+        q_t = GaussianDensity(jnp.atleast_2d(data), std_dev * jnp.ones((T, 1, 1)))
         next_smoother_init = None
 
     else:
@@ -132,8 +132,7 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
         Q = chol_Q @ chol_Q.T
 
         next_smoother_init = spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter)
-        # Parsmooth considers that the first step is always a prediction, so we need to get rid of it via a vile hack.
-        # It's fine as it is only the proposal q_t, but it's suboptimal. Need to fix this.
+
         kalman_mean, kalman_covs = next_smoother_init
         kalman_chols = kalman_covs ** 0.5  # Achtung: This only works because the state has one dimension !!!!
         q_t = GaussianDensity(kalman_mean, kalman_chols)
@@ -269,9 +268,13 @@ def gibbs_routine(rng_key, n_iter):
 
 init_key, gibbs_key = jax.random.split(jax_key)
 
+# # Compile the routine ahead of time to not count the impact of compilation time.
+# temp, *_ = gibbs_routine(gibbs_key, B)
+# temp.block_until_ready()
+
 tic = time.time()
-x_prec_samples, y_prec_samples, tau0_samples, tau1_samples, tau2_samples, traj_samples, rejuvenated_logs = gibbs_routine(
-    gibbs_key, B)
+(x_prec_samples, y_prec_samples, tau0_samples, tau1_samples, tau2_samples, traj_samples,
+ rejuvenated_logs) = gibbs_routine(gibbs_key, B)
 x_prec_samples.block_until_ready()
 toc = time.time()
 
@@ -283,10 +286,11 @@ tau2_samples = tau2_samples[BURN_IN:]
 rejuvenated_logs = rejuvenated_logs[BURN_IN:]
 traj_samples = traj_samples[BURN_IN:]
 
+os.makedirs("./output", exist_ok=True)
 np.savez(f"./output/theta-logistic-experiment-{use_kalman}", x_prec_samples=x_prec_samples,
          y_prec_samples=y_prec_samples,
          tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
-         rejuvenated_logs=rejuvenated_logs,
+         rejuvenated_logs=rejuvenated_logs.mean(0) / (N - 1),
          traj_samples=traj_samples)
 
 plt.plot(np.arange(T), rejuvenated_logs.mean(0) / (N - 1))
