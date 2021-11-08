@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import seaborn as sns
 import tensorflow_probability.substrates.jax as tfp
-from jax.experimental.host_callback import id_tap, id_print
+from jax.experimental.host_callback import id_tap
 from matplotlib import pyplot as plt
 from parsmooth.parallel import ieks
 from parsmooth.utils import MVNormalParameters
@@ -23,6 +23,7 @@ from examples.models.theta_logistic import transition_function, observation_func
 from parallel_ps.base import PyTree, UnivariatePotentialModel, GaussianDensity
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
+from parallel_ps.sequential import conditional_smoother
 from parallel_ps.utils import mvn_loglikelihood
 
 sns.set_theme()
@@ -31,7 +32,7 @@ sns.set_theme()
 
 # CONFIG
 warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
-backend = "gpu"
+backend = "cpu"
 # Particle smoother config
 
 N = 50  # Number of particles
@@ -40,8 +41,8 @@ BURN_IN = B // 10  # Discarded number of steps for stats
 KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
 KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
-use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
-
+use_kalman = False  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
+use_sequential = True  # use the sequential algorithm instead of the parallel one.
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
@@ -59,7 +60,8 @@ m0 = jnp.zeros((1,))
 chol_P0 = jnp.eye(1)
 
 # Other config
-jax_seed = 0
+jax_seed = np.random.randint(0, 123456)
+print("JAX SEED: ", jax_seed)
 jax_key = jax.random.PRNGKey(jax_seed)
 
 
@@ -88,14 +90,14 @@ class NutModel(UnivariatePotentialModel):
 def spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter):
     x0 = MVNormalParameters(m0, chol_P0 @ chol_P0.T)
     partial_transition_function = partial(transition_function, tau_0=tau0, tau_1=tau1, tau_2=tau2)
-    return ieks(x0, data, partial_transition_function, Q, observation_function, R,
+    return ieks(x0, data, partial_transition_function, Q, observation_function, R,  # noqa
                 smoother_init, n_iter, propagate_first=False)
 
 
 @partial(jax.jit, static_argnums=(6,))
 def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, traj=None):
     """
-    Run a conditional dSMC
+    Run a conditional SMC (sequential!!!)
 
     Parameters
     ----------
@@ -111,6 +113,8 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
     -------
     ...
     """
+    sample_key, select_key = jax.random.split(key)
+
     q_2 = 1 / x_prec
     r_2 = 1 / y_prec
     q = q_2 ** 0.5
@@ -118,33 +122,57 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
     chol_Q = jnp.array([[q]])
     chol_R = jnp.array([[r]])
     # id_print(jnp.nan)
-    if not use_kalman:
-        std_dev = (q_2 + r_2) ** 0.5
-        q_t = GaussianDensity(jnp.atleast_2d(data), std_dev * jnp.ones((T, 1, 1)))
-        next_smoother_init = None
-
-    else:
-        if smoother_init is None:
-            smoother_init = MVNormalParameters(data,
-                                               1e-1 * jnp.ones((T, 1, 1)))
-
-        R = chol_R @ chol_R.T
-        Q = chol_Q @ chol_Q.T
-
-        next_smoother_init = spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter)
-
-        kalman_mean, kalman_covs = next_smoother_init
-        kalman_chols = kalman_covs ** 0.5  # Achtung: This only works because the state has one dimension !!!!
-        q_t = GaussianDensity(kalman_mean, kalman_chols)
-    nu_t = q_t
 
     gen_observation_potential = ObservationPotential(chol_R, data[1:])
     init_observation_potential = InitObservationPotential(chol_R, data[0])
-    samples = particle_smoothing(key, q_t, nu_t, TransitionKernel(tau0, tau1, tau2, chol_Q), gen_observation_potential,
-                                 InitialModel(m0, chol_P0), init_observation_potential, multinomial, N,
-                                 conditional_trajectory=traj)
+    transition_kernel = TransitionKernel(tau0, tau1, tau2, chol_Q)
+    initial_model = InitialModel(m0, chol_P0)
 
-    return samples, next_smoother_init
+    # Even if use_sequential, we initialise gibbs with our method (easier to code, but no impact on experiments)
+
+    if not use_sequential:
+        if not use_kalman:
+            std_dev = (q_2 + r_2) ** 0.5
+            q_t = GaussianDensity(jnp.atleast_2d(data), std_dev * jnp.ones((T, 1, 1)))
+            next_smoother_init = None
+
+        else:
+            if smoother_init is None:
+                smoother_init = MVNormalParameters(data,
+                                                   1e-1 * jnp.ones((T, 1, 1)))
+
+            R = chol_R @ chol_R.T
+            Q = chol_Q @ chol_Q.T
+
+            next_smoother_init = spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter)
+
+            kalman_mean, kalman_covs = next_smoother_init
+            kalman_chols = kalman_covs ** 0.5  # Achtung: This only works because the state has one dimension !!!!
+            q_t = GaussianDensity(kalman_mean, kalman_chols)
+        nu_t = q_t
+        samples = particle_smoothing(key, q_t, nu_t, transition_kernel, gen_observation_potential,
+                                     initial_model, init_observation_potential, multinomial, N,
+                                     conditional_trajectory=traj)
+
+        ancestors = samples.origins
+        trajectories = samples.trajectories
+        idx = jax.random.randint(select_key, (), 0, N)
+        origins = ancestors[:, idx]
+        next_trajectory = jax.tree_map(lambda z: z[:, idx], trajectories)
+    else:
+
+
+        std_dev = (q_2 + r_2) ** 0.5
+        q_t = GaussianDensity(jnp.atleast_2d(data), std_dev * jnp.ones((T, 1, 1)))
+        next_smoother_init = None
+        qt_sample_key, csmc_key = jax.random.split(sample_key)
+        if traj is None:
+            traj = q_t.sample(qt_sample_key, 1)[:, 0]
+        origins, next_trajectory = conditional_smoother(T, traj, csmc_key, transition_kernel,
+                                                        gen_observation_potential, initial_model,
+                                                        init_observation_potential, N)
+    # id_print(next_trajectory, what="next_traj")
+    return next_trajectory, origins, next_smoother_init
 
 
 @jax.jit
@@ -214,7 +242,7 @@ def sample_params(key, tau0, tau1, tau2, sampled_traj):
 @partial(jax.jit, static_argnums=(1,), backend=backend)
 def gibbs_routine(rng_key, n_iter):
     def count_rejuvenate(origins):
-        return jnp.sum(origins != 0, axis=1)
+        return 0. + (origins != 0)
 
     init_key, rng_key = jax.random.split(rng_key)
     init_x_prec_key, init_y_prec_key, init_tau0_key, init_tau1_key, init_tau2_key = jax.random.split(init_key, 5)
@@ -225,11 +253,8 @@ def gibbs_routine(rng_key, n_iter):
     init_tau1 = tau1_prior.sample(seed=init_tau1_key)
     init_tau2 = tau2_prior.sample(seed=init_tau2_key)
 
-    init_trajs, smoother_init = cdsmc(init_key, init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2,
-                                      KALMAN_N_ITER_INIT, None, None)
-
-    traj_key, rng_key = jax.random.split(rng_key)
-    init_traj = init_trajs.trajectories[:, jax.random.randint(traj_key, (), 0, N)]  # unconditional
+    init_traj, _, smoother_init = cdsmc(init_key, init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2,
+                                        KALMAN_N_ITER_INIT, None, None)
 
     def body(carry, inps):
 
@@ -249,17 +274,15 @@ def gibbs_routine(rng_key, n_iter):
         next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2 = sample_params(
             param_sampling_key, curr_tau0, curr_tau1, curr_tau2, curr_traj)
 
-        sample_key, select_key = jax.random.split(traj_sampling_key)
-
-        traj_samples, next_smoother_init = cdsmc(sample_key, next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2,
-                                                 KALMAN_N_ITER, curr_smoother_init, curr_traj)
-        rejuvenated = count_rejuvenate(traj_samples.origins)
-        next_traj = traj_samples.trajectories[:, jax.random.randint(select_key, (), 0, N - 1)]
+        next_traj, origins, next_smoother_init = cdsmc(traj_sampling_key, next_x_prec, next_y_prec, next_tau0,
+                                                       next_tau1, next_tau2,
+                                                       KALMAN_N_ITER, curr_smoother_init, curr_traj)
         next_carry = next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2, next_traj, next_smoother_init
+        rejuvenated = count_rejuvenate(origins)
         save = next_x_prec, next_y_prec, next_tau0, next_tau1, next_tau2, next_traj, rejuvenated
         return next_carry, save
 
-    keys = jax.random.split(gibbs_key, n_iter)
+    keys = jax.random.split(rng_key, n_iter)
     carry_init = init_x_prec, init_y_prec, init_tau0, init_tau1, init_tau2, init_traj, smoother_init
     _, (x_precs, y_precs, tau0s, tau1s, tau2s, trajs, rejuvenated_stats) = jax.lax.scan(body, carry_init,
                                                                                         (jnp.arange(n_iter), keys), )
@@ -287,14 +310,15 @@ rejuvenated_logs = rejuvenated_logs[BURN_IN:]
 traj_samples = traj_samples[BURN_IN:]
 
 os.makedirs("./output", exist_ok=True)
-np.savez(f"./output/theta-logistic-experiment-{use_kalman}", x_prec_samples=x_prec_samples,
+np.savez(f"./output/theta-logistic-experiment-{use_kalman}-{use_sequential}", x_prec_samples=x_prec_samples,
          y_prec_samples=y_prec_samples,
          tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
-         rejuvenated_logs=rejuvenated_logs.mean(0) / (N - 1),
+         rejuvenated_logs=rejuvenated_logs.mean(0),
          traj_samples=traj_samples)
 
-plt.plot(np.arange(T), rejuvenated_logs.mean(0) / (N - 1))
+plt.plot(np.arange(T), rejuvenated_logs.mean(0))
 plt.title(f"Update rate per time step, run time: {toc - tic:.0f}s, n iter: {B}")
+plt.ylim(0, 1)
 plt.show()
 
 sns.jointplot(x=tau1_samples, y=tau0_samples)

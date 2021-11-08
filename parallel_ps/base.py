@@ -19,8 +19,9 @@
 #  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
+from abc import ABC
 from functools import partial
-from typing import TypeVar, Union, Tuple, List, Dict, NamedTuple
+from typing import TypeVar, Union, Tuple, List, Dict, NamedTuple, Any
 
 import chex
 import jax
@@ -74,13 +75,12 @@ def ess(weights: jnp.ndarray) -> float:
 
 class DSMCState(NamedTuple):
     """
-    Current state of the partial smoother.
+    Current state of the filter/smoother.
 
     trajectories:
         Collection of partial smoothing trajectories. This can be any Pytree (see JAX doc)
     log_weights:
-        This is only useful at initialisation. Otherwise, they will be constant due to the fact we resample at
-        each stitching operation
+        Log-weights of the full trajectory
     ells:
         Running log-normalizing constant of the partial smoothing distribution
     origins:
@@ -125,7 +125,7 @@ class ParametrizedModel:
         self.batched = batched
 
 
-class UnivariatePotentialModel(ParametrizedModel):
+class UnivariatePotentialModel(ParametrizedModel, ABC):
     r"""
     Univariate potential model. For example this can represent x -> log(p(y|x)) or a given density, in which case the
     log-potential corresponds to the unnormalised log-likelihood.
@@ -160,7 +160,7 @@ class UnivariatePotentialModel(ParametrizedModel):
         raise NotImplementedError
 
 
-class DensityModel(UnivariatePotentialModel):
+class DensityModel(UnivariatePotentialModel, ABC):
     """
     Same as the univariate potential model, but can also sample from the model. In practice this should be reserved to
     :math:`q_t` even if the potential model comes from a density in the first place (coding best practices).
@@ -176,7 +176,7 @@ class DensityModel(UnivariatePotentialModel):
         Number of time steps sampled from.
     """
 
-    def __init__(self, parameters: PyTree, batched: PyTree, T: int = None):
+    def __init__(self, parameters: Any, batched: Any, T: int = None):
         ParametrizedModel.__init__(self, parameters, batched)
         self.T = T
 
@@ -199,10 +199,10 @@ class DensityModel(UnivariatePotentialModel):
             Resulting sampled trajectories. First batch index is the time index,
             second is the simulation. The trailing dimension are model specific.
         """
-        raise NotImplementedError("")
+        raise NotImplementedError
 
 
-class BivariatePotentialModel(ParametrizedModel):
+class BivariatePotentialModel(ParametrizedModel, ABC):
     r"""
     Bivariate potential model. For example this can represent x_t_1, x_t -> log(p(x_t|x_t_1)).
     It is used to define M_t and G_t.
@@ -238,9 +238,10 @@ class BivariatePotentialModel(ParametrizedModel):
         raise NotImplementedError
 
 
-class ConditionalDensityModel(BivariatePotentialModel):
+class ConditionalDensityModel(BivariatePotentialModel, ABC):
     r"""
-    Conditional Density Model, same as BivariatePotentialModel with additional sampling utility.
+    Conditional Density Model, same as BivariatePotentialModel with additional sampling utility. Note that because this
+    uses a key, it is the only one that is note that the sample takes a batch of particles!
 
     Parameters
     ----------

@@ -19,36 +19,38 @@
 #  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
-
+import math
 from functools import partial
-from typing import Callable
 
 import chex
 import jax
 import jax.numpy as jnp
-import jax.ops as ops
+from jax.experimental.host_callback import id_print
 from jax.random import split
 from jax.scipy.special import logsumexp
 
 from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, DSMCState, \
-    NullPotentialModel, ConditionalDensityModel
-from parallel_ps.core import dc_map
-from parallel_ps.core.resampling import RESAMPLING_SIGNATURE, multinomial
-from parallel_ps.operators import operator
-from parallel_ps.smoothing_utils import make_log_weight_fn_and_params_inputs, compute_first_log_weights, \
-    compute_generic_log_weights
+    NullPotentialModel, ConditionalDensityModel, split_batched_and_static_params, rejoin_batched_and_static_params
+from parallel_ps.core.resampling import multinomial
 
 
-def filtering(key: chex.PRNGKey,
-              Mt: ConditionalDensityModel, Gt: BivariatePotentialModel,
-              M0: DensityModel,
-              G0: UnivariatePotentialModel = NullPotentialModel(),
-              resampling_method: RESAMPLING_SIGNATURE = multinomial,
-              N: int = 100):
+def conditional_smoother(T,
+                         conditional_trajectory,
+                         key: chex.PRNGKey,
+                         Mt: ConditionalDensityModel, Gt: BivariatePotentialModel,
+                         M0: DensityModel,
+                         G0: UnivariatePotentialModel = NullPotentialModel(),
+                         N: int = 100,
+                         do_backward_pass: bool = True
+                         ):
     """
 
     Parameters
     ----------
+    T: int
+        Total number of time steps for the state
+    conditional_trajectory: PyTree
+        A conditional trajectory to run conditional SMC
     key: PRNGKey
         the random JAX key used as an initialisation of the algorithm.
     Mt: ConditionalDensityModel
@@ -60,120 +62,187 @@ def filtering(key: chex.PRNGKey,
     G0: UnivariatePotentialModel, optional
         The potential function for the first time step. If doing smoothing where observation happens at the second
         time step (predict first) then this should encode a 0 potential, which is the default behaviour.
-    resampling_method: callable
-        Resampling method used
     N: int, optional
         Number of particles for the final state. Default is 100
+    do_backward_pass: bool
+        Are we doing a backward sampling pass
 
     Returns
     -------
-    smc_state: DSMCState
-        The final state of the algorithm
+    ancestors, trajectory
     """
-    # In the current state of JAX, you should not JIT a PMAP operation as this induces communication
-    # over devices instead of using shared memory.
-    static_argnums = 1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 18, 19, 21, 22, 23
-    filtering_fun = jax.jit(_filtering, static_argnums=static_argnums)
-    return filtering_fun(key,
-                         Mt.sample, Mt.log_potential, Mt.parameters, Mt.batched,
-                         Gt.log_potential, Gt.parameters, Gt.batched,
-                         M0.sample, M0.log_potential, M0.parameters,
-                         G0.log_potential, G0.parameters,
-                         resampling_method,
-                         N)
+    filtering_static_argnums = 0, 2, 4, 5, 7, 8, 9, 11
+    filtering_key, sampling_key = jax.random.split(key, 2)
+    filtering_fun = jax.jit(_filtering, static_argnums=filtering_static_argnums)
+    filtering_result = filtering_fun(T, key,
+                                     Mt.sample, Mt.parameters, Mt.batched,
+                                     Gt.log_potential, Gt.parameters, Gt.batched,
+                                     M0.sample, G0.log_potential, G0.parameters,
+                                     N, conditional_trajectory)
+
+    if do_backward_pass:
+        bs_static_argnums = 0, 3, 5, 6
+        bs_fun = jax.jit(_backward_sampling, static_argnums=bs_static_argnums)
+        return bs_fun(T, sampling_key, filtering_result, Mt.log_potential, Mt.parameters, Mt.batched, N)
+    else:
+        return _no_sampling_select(sampling_key, filtering_result, N)
 
 
-def _filtering(key: chex.PRNGKey,
-               Mt_sampler, Mt_log_potential, Mt_params, Mt_batched_flag,
+def _filtering(T: int,
+               key: chex.PRNGKey,
+               Mt_sampler, Mt_params, Mt_batched_flag,
                Gt_log_potential, Gt_params, Gt_batched_flag,
-               M0_sampler, M0_log_potential, M0_params,
-               G0_log_potential, G0_params,
-               resampling_method: RESAMPLING_SIGNATURE,
-               N):
+               M0_sampler, G0_log_potential, G0_params,
+               N, conditional_trajectory):
     key, init_key = split(key, 2)
     init_particles = M0_sampler(key, N)
 
-
-
-    first_log_weights = compute_first_log_weights(first_time_step,
-                                                  M0_log_potential, M0_params,
-                                                  qt_log_potential, qt_params, qt_batched_flag,
-                                                  G0_log_potential, G0_params)
-
-    init_weights = G0_log_potential
-
     # If conditional trajectory is not None, then update the first simulation index of all the time steps.
-    if conditional_trajectory is not None:
-        trajectories = jax.tree_map(lambda xs, x: ops.index_update(xs, ops.index[:, 0], x),
-                                    trajectories,
-                                    conditional_trajectory)
+    init_conditional_trajectory = jax.tree_map(lambda z: z[0], conditional_trajectory)
+    conditional_trajectory = jax.tree_map(lambda z: z[1:], conditional_trajectory)
+    init_particles = jax.tree_map(lambda z, y: z.at[0].set(y), init_particles, init_conditional_trajectory)
 
-    # Compute the log weights for each time steps
-    first_time_step = jax.tree_map(lambda z: z[0], trajectories)
-    rest_time_steps = jax.tree_map(lambda z: z[1:], trajectories)
+    vmapped_G0_log_potential = jax.vmap(lambda z: G0_log_potential(z, G0_params))
+    first_log_weights = vmapped_G0_log_potential(init_particles)
+    normalizer = logsumexp(first_log_weights)
+    first_log_weights = first_log_weights - normalizer
+    ell_0 = normalizer - math.log(N)
 
-    first_log_weights = compute_first_log_weights(first_time_step,
-                                                  M0_log_potential, M0_params,
-                                                  qt_log_potential, qt_params, qt_batched_flag,
-                                                  G0_log_potential, G0_params)
-    rest_log_weights = compute_generic_log_weights(rest_time_steps,
-                                                   nut_log_potential, nut_params, nut_batched_flag,
-                                                   qt_log_potential, qt_params, qt_batched_flag,
-                                                   T)
-    log_weights = jnp.concatenate([jnp.expand_dims(first_log_weights, 0), rest_log_weights])
-    # Compute the initial log-likelihood as a log mean exp operation.
+    Mt_sampler, _, Mt_params = _make_sampler_or_potential(Mt_sampler, None, Mt_params, Mt_batched_flag)
+    _, Gt_log_potential, Gt_params = _make_sampler_or_potential(None, Gt_log_potential, Gt_params, Gt_batched_flag)
 
-    logsumexp_weights = logsumexp(log_weights, axis=1)
+    def body(carry, inputs):
+        _, curr_log_weights, curr_ell, curr_particles = carry
+        op_key, Mt_params_t, Gt_params_t, curr_conditional = inputs
 
-    log_weights = log_weights - logsumexp_weights[:, None]  # normalize
+        weights = jnp.exp(curr_log_weights)
 
-    ells = jnp.zeros((T,))
-    # Get the log_weights and required batched input to it.
-    log_weight_function, params_dict = make_log_weight_fn_and_params_inputs(
-        nut_log_potential, nut_params, nut_batched_flag,
-        Mt_log_potential, Mt_params, Mt_batched_flag,
-        Gt_log_potential, Gt_params, Gt_batched_flag,
-        T
-    )
+        op_sample_key, op_resample_key = jax.random.split(op_key)
+        idx = _conditional_resample(op_resample_key, weights, N)
+        curr_particles = jax.tree_map(lambda x: x[idx], curr_particles)
+
+        proposed_particles = Mt_sampler(op_sample_key, curr_particles, Mt_params_t)
+        proposed_particles = jax.tree_map(lambda y, z: z.at[0].set(y), curr_conditional, proposed_particles)
+
+        curr_log_weights = Gt_log_potential(curr_particles, proposed_particles, Gt_params_t)
+        curr_normalizer = logsumexp(curr_log_weights)
+        ell_inc = curr_normalizer - math.log(N)
+        curr_log_weights = curr_log_weights - curr_normalizer
+
+        next_carry = idx, curr_log_weights, curr_ell + ell_inc, proposed_particles
+        save = curr_log_weights, idx, proposed_particles, curr_ell
+        return next_carry, save
 
     # Create inputs
-    combination_keys = split(key, T)
-    origins = jnp.repeat(jnp.arange(0, N)[None, :], T, axis=0)
-    dsmc_state = DSMCState(trajectories, log_weights, ells, origins)
-    inputs = dsmc_state, combination_keys, params_dict
+    scan_keys = split(key, T - 1)
 
-    combination_operator: Callable = jax.vmap(partial(operator,
-                                                      log_weight_fn=log_weight_function,
-                                                      resampling_method=resampling_method,
-                                                      conditional=conditional_trajectory is not None,
-                                                      n_samples=N))
+    init_ancestors = jnp.arange(N, dtype=int)
+    init = init_ancestors, first_log_weights, ell_0, init_particles
+    scan_inputs = scan_keys, Mt_params, Gt_params, conditional_trajectory
+    _, (log_weights, ancestors, trajectories, ells) = jax.lax.scan(body, init, scan_inputs)
 
-    final_states, *_ = dc_map(inputs, combination_operator)
-    if conditional_trajectory is not None:
-        final_trajectories = jax.tree_map(lambda z: z[:, 1:], final_states.trajectories)
-        final_log_weights = final_states.log_weights[:, 1:]
-        final_origins = final_states.origins[:, 1:]
-        final_states = DSMCState(final_trajectories, final_log_weights, ells, final_origins)
-    return final_states
+    trajectories = jax.tree_map(lambda z, y: jnp.insert(z, 0, y, axis=0), trajectories, init_particles)
+    ancestors = jnp.insert(ancestors, 0, init_ancestors, axis=0)
+    ells = jnp.insert(ells, 0, ell_0, axis=0)
+    log_weights = jnp.insert(log_weights, 0, first_log_weights, axis=0)
+    smc_state = DSMCState(trajectories, log_weights, ells, ancestors)
+
+    return smc_state
+
+def _normalize_and_exp(log_weights):
+    log_nan_max = jnp.nanmax(log_weights)
+    log_weights = log_weights - log_nan_max
+    weights = jnp.exp(log_weights)
+    sum_weights = jnp.nansum(weights)
+    return weights / sum_weights
 
 
+def _backward_sampling(T, key, filtering_state: DSMCState,
+                       Mt_log_potential, Mt_params, Mt_batched_flag,
+                       N):
+    trajectories, log_weights, _, ancestors = filtering_state
 
-@partial(jax.jit, static_argnums=(1, 3, 5, 6))
-def compute_first_log_weights(particles,
-                              M0_log_potential, M0_params,
-                              G0_log_potential, G0_params):
-    """
-    This computes the initialisation weights for the first timestep only.
-    """
-    initial_model_potential = jax.vmap(M0_log_potential, in_axes=[0, None])
-    Gt_model_potential = jax.vmap(G0_log_potential, in_axes=[0, None])
-    qt_model_potential = jax.vmap(qt_log_potential, in_axes=[0, None])
+    Mt_batched_params, Mt_static_params = split_batched_and_static_params(Mt_params,
+                                                                          Mt_batched_flag)
 
-    log_weights = initial_model_potential(particles, M0_params)
-    log_weights = log_weights + Gt_model_potential(particles, G0_params)
+    @partial(jax.vmap, in_axes=[0, None, None])
+    def spec_Mt_log_potential(x_t_1, x_t, params_t):
+        params_t = rejoin_batched_and_static_params(params_t, Mt_static_params,
+                                                    Mt_batched_flag)
+        return Mt_log_potential(x_t_1, x_t, params_t)
 
-    # Get the param corresponding to the first timestep if params are barched, otherwise simply get the static param
-    qt_parameters = jax.tree_map(lambda z, b: z[0] if b else z,
-                                 qt_params, qt_batched_flags)
+    init_key, key = jax.random.split(key, 2)
+    B_T = jax.random.choice(init_key, N, p=jnp.exp(log_weights[-1]))
+    X_T = jax.tree_map(lambda z: z[-1, B_T], trajectories)
+    rest_particles = jax.tree_map(lambda z: z[:-1], trajectories)
 
-    return log_weights - qt_model_potential(particles, qt_parameters)
+    def body(carry, inputs):
+        _, X_t_p_1 = carry
+        op_key, log_weights_t, particles_t, Mt_params_t_p_1 = inputs
+        log_Mt_weights = spec_Mt_log_potential(particles_t, X_t_p_1, Mt_params_t_p_1)
+
+        curr_log_weights = log_weights_t + log_Mt_weights
+
+        normalizer = logsumexp(curr_log_weights)
+        weights = jnp.exp(curr_log_weights - normalizer)
+        B_t = jax.random.choice(op_key, N, p=weights)
+        X_t = jax.tree_map(lambda z: z[B_t], particles_t)
+        return (B_t, X_t), (B_t, X_t)
+
+    scan_keys = jax.random.split(key, T - 1)
+
+    scan_inputs = scan_keys, log_weights[:-1], rest_particles, Mt_batched_params
+    _, (ancestors, sampled_traj) = jax.lax.scan(body, (B_T, X_T), scan_inputs, reverse=True)
+    sampled_traj = jax.tree_map(lambda z, y: jnp.concatenate([z, y[None, :]], 0), sampled_traj, X_T)
+    ancestors = jnp.concatenate([ancestors, jnp.atleast_1d(B_T)], 0)
+    return ancestors, sampled_traj
+
+
+@partial(jax.jit, static_argnums=(2,))
+def _no_sampling_select(sampling_key, filtering_result, N):
+    trajectories, log_weights, _, ancestors = filtering_result
+    init_key, key = jax.random.split(sampling_key, 2)
+    B_T = jax.random.choice(init_key, N, p=jnp.exp(log_weights[-1]))
+    X_T = jax.tree_map(lambda z: z[-1, B_T], trajectories)
+    rest_particles = jax.tree_map(lambda z: z[: -1], trajectories)
+
+    def body(B_t_p_1, inp):
+        X_t, A_t = inp
+        B_t = A_t[B_t_p_1]
+        X_t = X_t[B_t]
+        return B_t, (X_t, B_t)
+
+    _, (sampled_traj, ancestors) = jax.lax.scan(body, B_T, (rest_particles, ancestors[1:]), reverse=True)
+
+    sampled_traj = jax.tree_map(lambda z, y: jnp.concatenate([z, y[None, :]], 0), sampled_traj, X_T)
+    ancestors = jnp.concatenate([ancestors, jnp.atleast_1d(B_T)], 0)
+    return ancestors, sampled_traj
+
+
+def _conditional_resample(key, weights, N):
+    idx = multinomial(weights, key, N - 1)
+    idx = jnp.insert(idx, 0, 0, axis=0)
+    return idx
+
+
+def _make_sampler_or_potential(sampler_fn, potential_fn, params, bathed_flag):
+    batched_params, static_params = split_batched_and_static_params(params,
+                                                                    bathed_flag)
+
+    if potential_fn is not None:
+        @partial(jax.vmap, in_axes=[0, 0, None])
+        def batched_potential_fn(x_t_1, x_t, params_t):
+            params_t = rejoin_batched_and_static_params(params_t, static_params,
+                                                        bathed_flag)
+            return potential_fn(x_t_1, x_t, params_t)
+    else:
+        batched_potential_fn = None
+
+    if sampler_fn is not None:
+        def batched_sampler_fn(key, x_t_1, params_t):
+            params_t = rejoin_batched_and_static_params(params_t, static_params,
+                                                        bathed_flag)
+            return sampler_fn(key, x_t_1, params_t)
+    else:
+        batched_sampler_fn = None
+    return batched_sampler_fn, batched_potential_fn, batched_params
