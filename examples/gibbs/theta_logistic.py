@@ -32,7 +32,7 @@ sns.set_theme()
 
 # CONFIG
 warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
-backend = "cpu"
+backend = "gpu"
 # Particle smoother config
 
 N = 50  # Number of particles
@@ -60,8 +60,7 @@ m0 = jnp.zeros((1,))
 chol_P0 = jnp.eye(1)
 
 # Other config
-jax_seed = np.random.randint(0, 123456)
-print("JAX SEED: ", jax_seed)
+jax_seed = 0
 jax_key = jax.random.PRNGKey(jax_seed)
 
 

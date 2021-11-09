@@ -25,7 +25,6 @@ from functools import partial
 import chex
 import jax
 import jax.numpy as jnp
-from jax.experimental.host_callback import id_print
 from jax.random import split
 from jax.scipy.special import logsumexp
 
@@ -148,6 +147,7 @@ def _filtering(T: int,
     smc_state = DSMCState(trajectories, log_weights, ells, ancestors)
 
     return smc_state
+
 
 def _normalize_and_exp(log_weights):
     log_nan_max = jnp.nanmax(log_weights)
