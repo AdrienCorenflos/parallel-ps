@@ -33,6 +33,7 @@ sns.set_theme()
 # CONFIG
 warnings.simplefilter("ignore")  # ignore tensorflow probability dtypes warnings.
 backend = "gpu"
+DO_RUN = True
 # Particle smoother config
 
 N = 50  # Number of particles
@@ -41,8 +42,8 @@ BURN_IN = B // 10  # Discarded number of steps for stats
 KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
 KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
-use_kalman = False  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
-use_sequential = True  # use the sequential algorithm instead of the parallel one.
+use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
+use_sequential = False  # use the sequential algorithm instead of the parallel one.
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
@@ -93,10 +94,10 @@ def spec_iks(tau0, tau1, tau2, Q, R, smoother_init, n_iter):
                 smoother_init, n_iter, propagate_first=False)
 
 
-@partial(jax.jit, static_argnums=(6,))
+@partial(jax.jit, static_argnums=(6,), backend=backend)
 def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, traj=None):
     """
-    Run a conditional SMC (sequential!!!)
+    Run a conditional SMC
 
     Parameters
     ----------
@@ -159,8 +160,6 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
         origins = ancestors[:, idx]
         next_trajectory = jax.tree_map(lambda z: z[:, idx], trajectories)
     else:
-
-
         std_dev = (q_2 + r_2) ** 0.5
         q_t = GaussianDensity(jnp.atleast_2d(data), std_dev * jnp.ones((T, 1, 1)))
         next_smoother_init = None
@@ -288,60 +287,63 @@ def gibbs_routine(rng_key, n_iter):
     return x_precs, y_precs, tau0s, tau1s, tau2s, trajs, rejuvenated_stats
 
 
-init_key, gibbs_key = jax.random.split(jax_key)
+def run_experiment():
+    init_key, gibbs_key = jax.random.split(jax_key)
 
-# # Compile the routine ahead of time to not count the impact of compilation time.
-# temp, *_ = gibbs_routine(gibbs_key, B)
-# temp.block_until_ready()
+    tic = time.time()
+    (x_prec_samples, y_prec_samples, tau0_samples, tau1_samples, tau2_samples, traj_samples,
+     rejuvenated_logs) = gibbs_routine(gibbs_key, B)
+    x_prec_samples.block_until_ready()
+    toc = time.time()
 
-tic = time.time()
-(x_prec_samples, y_prec_samples, tau0_samples, tau1_samples, tau2_samples, traj_samples,
- rejuvenated_logs) = gibbs_routine(gibbs_key, B)
-x_prec_samples.block_until_ready()
-toc = time.time()
+    x_prec_samples = x_prec_samples[BURN_IN:]
+    y_prec_samples = y_prec_samples[BURN_IN:]
+    tau0_samples = tau0_samples[BURN_IN:]
+    tau1_samples = tau1_samples[BURN_IN:]
+    tau2_samples = tau2_samples[BURN_IN:]
+    rejuvenated_logs = rejuvenated_logs[BURN_IN:]
+    traj_samples = traj_samples[BURN_IN:]
 
-x_prec_samples = x_prec_samples[BURN_IN:]
-y_prec_samples = y_prec_samples[BURN_IN:]
-tau0_samples = tau0_samples[BURN_IN:]
-tau1_samples = tau1_samples[BURN_IN:]
-tau2_samples = tau2_samples[BURN_IN:]
-rejuvenated_logs = rejuvenated_logs[BURN_IN:]
-traj_samples = traj_samples[BURN_IN:]
-
-os.makedirs("./output", exist_ok=True)
-np.savez(f"./output/theta-logistic-experiment-{use_kalman}-{use_sequential}", x_prec_samples=x_prec_samples,
-         y_prec_samples=y_prec_samples,
-         tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
-         rejuvenated_logs=rejuvenated_logs.mean(0),
-         traj_samples=traj_samples)
-
-plt.plot(np.arange(T), rejuvenated_logs.mean(0))
-plt.title(f"Update rate per time step, run time: {toc - tic:.0f}s, n iter: {B}")
-plt.ylim(0, 1)
-plt.show()
-
-sns.jointplot(x=tau1_samples, y=tau0_samples)
-plt.show()
-
-sns.jointplot(x=tau2_samples, y=tau0_samples)
-plt.show()
-
-fig, axes = plt.subplots(ncols=3, nrows=2, figsize=(12, 10))
+    os.makedirs("./output", exist_ok=True)
+    np.savez(f"./output/theta-logistic-experiment-{use_kalman}-{use_sequential}", x_prec_samples=x_prec_samples,
+             y_prec_samples=y_prec_samples,
+             tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
+             rejuvenated_logs=rejuvenated_logs.mean(0),
+             traj_samples=traj_samples, runtime=toc-tic)
 
 
-def plot_acf(arr, ax, label):
-    acf_data = acf(arr, nlags=100)
-    ax.plot(acf_data, label=label)
-    ax.set_xlabel("lag")
-    ax.set_ylim(0, 1)
-    ax.legend()
+def plot_experiment():
+    experiment_result = np.load(f"./output/theta-logistic-experiment-{use_kalman}-{use_sequential}.npz")
+    plt.plot(np.arange(T), experiment_result["rejuvenated_logs"])
+    plt.title(f"Update rate per time step, run time: {experiment_result['runtime']:.0f}s, n iter: {B}")
+    plt.ylim(0, 1)
+    plt.show()
+
+    sns.jointplot(x=experiment_result['tau1_samples'], y=experiment_result['tau0_samples'])
+    plt.show()
+
+    sns.jointplot(x=experiment_result['tau2_samples'], y=experiment_result['tau0_samples'])
+    plt.show()
+
+    fig, axes = plt.subplots(ncols=3, nrows=2, figsize=(12, 10))
+
+    def plot_acf(arr, ax, label):
+        acf_data = acf(arr, nlags=100)
+        ax.plot(acf_data, label=label)
+        ax.set_xlabel("lag")
+        ax.set_ylim(-0.05, 1)
+        ax.legend()
+
+    plot_acf(experiment_result['x_prec_samples'], axes[1, 0], r"$1/\sigma_X^2$")
+    plot_acf(experiment_result['y_prec_samples'], axes[1, 1], r"$1/\sigma_Y^2$")
+    plot_acf(experiment_result['tau0_samples'], axes[0, 0], r"$\tau_0$")
+    plot_acf(experiment_result['tau1_samples'], axes[0, 1], r"$\tau_1$")
+    plot_acf(experiment_result['tau2_samples'], axes[0, 2], r"$\tau_2$")
+    plot_acf(experiment_result['traj_samples'][:, 0, 0], axes[1, 2], r"$x_0$")
+
+    plt.show()
 
 
-plot_acf(x_prec_samples, axes[1, 0], r"$1/\sigma_X^2$")
-plot_acf(y_prec_samples, axes[1, 1], r"$1/\sigma_Y^2$")
-plot_acf(tau0_samples, axes[0, 0], r"$\tau_0$")
-plot_acf(tau1_samples, axes[0, 1], r"$\tau_1$")
-plot_acf(tau2_samples, axes[0, 2], r"$\tau_2$")
-plot_acf(traj_samples[:, 0, 0], axes[1, 2], r"$x_0$")
-
-plt.show()
+if DO_RUN:
+    run_experiment()
+plot_experiment()
