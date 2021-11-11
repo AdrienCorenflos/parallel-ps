@@ -81,7 +81,8 @@ def multinomial(weights: jnp.ndarray, rng_key: PRNGKey, n_samples: int) -> jnp.n
     # his O(N) loop as our code is meant to work on GPU where searchsorted is O(log(N)) anyway.
 
     n = weights.shape[0]
-    linspace = sorted_uniforms(rng_key, n_samples)
+    # linspace = sorted_uniforms(rng_key, n_samples)
+    linspace = jax.random.uniform(rng_key, (n_samples,))
     cumsum = jnp.cumsum(weights)
     idx = jnp.searchsorted(cumsum, linspace)
     return jnp.clip(idx, 0, n - 1)
