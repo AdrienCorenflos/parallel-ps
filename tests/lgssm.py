@@ -1,8 +1,9 @@
 import chex
 import jax.numpy as jnp
+import jax.random
 import numpy as np
 
-from parallel_ps.base import BivariatePotentialModel, PyTree
+from parallel_ps.base import BivariatePotentialModel, PyTree, ConditionalDensityModel
 from parallel_ps.utils import mvn_loglikelihood
 
 
@@ -11,9 +12,15 @@ def _lgssm_log_potential_one(x, y, F, b, cholQ):
     return mvn_loglikelihood(y, mean, cholQ)
 
 
-class LinearGaussianTransitionModel(BivariatePotentialModel):
+class LinearGaussianTransitionModel(ConditionalDensityModel):
     parameters: PyTree
     batched: PyTree
+
+    def sample(self, key: chex.PRNGKey, x_t_1: chex.ArrayTree, parameter: PyTree) -> chex.ArrayTree:
+        F, b, cholQ = parameter
+        m = F[None, ...] @ x_t_1 + b[None, :]
+        eps = jax.random.normal(key, x_t_1.shape)
+        return m + cholQ[None, ...] @ eps
 
     def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         F, b, cholQ = parameter

@@ -13,8 +13,8 @@ from parallel_ps.utils import mvn_loglikelihood
 
 class InitialModel(DensityModel):
     def __init__(self, m0, chol_P0):
-        super(UnivariatePotentialModel, self).__init__((m0, chol_P0),
-                                                       (False, False))
+        super(DensityModel, self).__init__((m0, chol_P0),
+                                           (False, False))
 
     def log_potential(self, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         m0, chol_P0 = parameter

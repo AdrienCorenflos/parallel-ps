@@ -120,7 +120,7 @@ def rejoin_batched_and_static_params(batched_params, static_params, batched):
 
 
 class ParametrizedModel:
-    def __init__(self, parameters: PyTree, batched: PyTree):
+    def __init__(self, parameters: PyTree, batched: Any):
         self.parameters = parameters
         self.batched = batched
 

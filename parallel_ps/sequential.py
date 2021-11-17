@@ -33,23 +33,22 @@ from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePo
 from parallel_ps.core.resampling import multinomial
 
 
-def conditional_smoother(T,
-                         conditional_trajectory,
-                         key: chex.PRNGKey,
-                         Mt: ConditionalDensityModel, Gt: BivariatePotentialModel,
-                         M0: DensityModel,
-                         G0: UnivariatePotentialModel = NullPotentialModel(),
-                         N: int = 100,
-                         do_backward_pass: bool = True
-                         ):
+def smoothing(T,
+              key: chex.PRNGKey,
+              Mt: ConditionalDensityModel, Gt: BivariatePotentialModel,
+              M0: DensityModel,
+              G0: UnivariatePotentialModel = NullPotentialModel(),
+              N: int = 100,
+              M: int = 1,
+              do_backward_pass: bool = True,
+              conditional_trajectory=None,
+              ):
     """
 
     Parameters
     ----------
     T: int
         Total number of time steps for the state
-    conditional_trajectory: PyTree
-        A conditional trajectory to run conditional SMC
     key: PRNGKey
         the random JAX key used as an initialisation of the algorithm.
     Mt: ConditionalDensityModel
@@ -63,12 +62,16 @@ def conditional_smoother(T,
         time step (predict first) then this should encode a 0 potential, which is the default behaviour.
     N: int, optional
         Number of particles for the final state. Default is 100
+    M: int, optional
+        Number of posterior trajectories to be sampled, default is 1.
     do_backward_pass: bool
         Are we doing a backward sampling pass
+    conditional_trajectory: PyTree, optional
+        A conditional trajectory to run conditional SMC
 
     Returns
     -------
-    ancestors, trajectory
+    (ancestors, trajectory), ell
     """
     filtering_static_argnums = 0, 2, 4, 5, 7, 8, 9, 11
     filtering_key, sampling_key = jax.random.split(key, 2)
@@ -79,12 +82,21 @@ def conditional_smoother(T,
                                      M0.sample, G0.log_potential, G0.parameters,
                                      N, conditional_trajectory)
 
+    ells = filtering_result.ells
+
     if do_backward_pass:
         bs_static_argnums = 0, 3, 5, 6
         bs_fun = jax.jit(_backward_sampling, static_argnums=bs_static_argnums)
-        return bs_fun(T, sampling_key, filtering_result, Mt.log_potential, Mt.parameters, Mt.batched, N)
-    else:
-        return _no_sampling_select(sampling_key, filtering_result, N)
+        if M == 1:
+            return bs_fun(T, sampling_key, filtering_result, Mt.log_potential, Mt.parameters, Mt.batched, N), ells
+        keys = jax.random.split(sampling_key, M)
+        fun = lambda k: bs_fun(T, k, filtering_result, Mt.log_potential, Mt.parameters, Mt.batched, N)
+        return jax.vmap(fun, in_axes=0, out_axes=1)(keys), ells
+    if M == 1:
+        return _no_sampling_select(sampling_key, filtering_result, N), ells
+    keys = jax.random.split(sampling_key, M)
+    fun = lambda k: _no_sampling_select(k, filtering_result, N)
+    return jax.vmap(fun, in_axes=0, out_axes=1)(keys), ells
 
 
 def _filtering(T: int,
@@ -92,14 +104,15 @@ def _filtering(T: int,
                Mt_sampler, Mt_params, Mt_batched_flag,
                Gt_log_potential, Gt_params, Gt_batched_flag,
                M0_sampler, G0_log_potential, G0_params,
-               N, conditional_trajectory):
+               N, conditional_trajectory=None):
     key, init_key = split(key, 2)
     init_particles = M0_sampler(key, N)
 
     # If conditional trajectory is not None, then update the first simulation index of all the time steps.
-    init_conditional_trajectory = jax.tree_map(lambda z: z[0], conditional_trajectory)
-    conditional_trajectory = jax.tree_map(lambda z: z[1:], conditional_trajectory)
-    init_particles = jax.tree_map(lambda z, y: z.at[0].set(y), init_particles, init_conditional_trajectory)
+    if conditional_trajectory is not None:
+        init_conditional_trajectory = jax.tree_map(lambda z: z[0], conditional_trajectory)
+        conditional_trajectory = jax.tree_map(lambda z: z[1:], conditional_trajectory)
+        init_particles = jax.tree_map(lambda z, y: z.at[0].set(y), init_particles, init_conditional_trajectory)
 
     vmapped_G0_log_potential = jax.vmap(lambda z: G0_log_potential(z, G0_params))
     first_log_weights = vmapped_G0_log_potential(init_particles)
@@ -121,7 +134,8 @@ def _filtering(T: int,
         curr_particles = jax.tree_map(lambda x: x[idx], curr_particles)
 
         proposed_particles = Mt_sampler(op_sample_key, curr_particles, Mt_params_t)
-        proposed_particles = jax.tree_map(lambda y, z: z.at[0].set(y), curr_conditional, proposed_particles)
+        if curr_conditional is not None:
+            proposed_particles = jax.tree_map(lambda y, z: z.at[0].set(y), curr_conditional, proposed_particles)
 
         curr_log_weights = Gt_log_potential(curr_particles, proposed_particles, Gt_params_t)
         curr_normalizer = logsumexp(curr_log_weights)

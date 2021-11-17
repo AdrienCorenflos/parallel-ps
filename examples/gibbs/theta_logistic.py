@@ -23,7 +23,7 @@ from examples.models.theta_logistic import transition_function, observation_func
 from parallel_ps.base import PyTree, UnivariatePotentialModel, GaussianDensity
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
-from parallel_ps.sequential import conditional_smoother
+from parallel_ps.sequential import smoothing
 from parallel_ps.utils import mvn_loglikelihood
 
 sns.set_theme()
@@ -43,7 +43,7 @@ KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sa
 KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
 use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
-use_sequential = False  # use the sequential algorithm instead of the parallel one.
+use_sequential = True  # use the sequential algorithm instead of the parallel one.
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
@@ -166,10 +166,9 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
         qt_sample_key, csmc_key = jax.random.split(sample_key)
         if traj is None:
             traj = q_t.sample(qt_sample_key, 1)[:, 0]
-        origins, next_trajectory = conditional_smoother(T, traj, csmc_key, transition_kernel,
-                                                        gen_observation_potential, initial_model,
-                                                        init_observation_potential, N)
-    # id_print(next_trajectory, what="next_traj")
+        (origins, next_trajectory), _ = smoothing(T, csmc_key, transition_kernel,
+                                                  gen_observation_potential, initial_model,
+                                                  init_observation_potential, N, conditional_trajectory=traj)
     return next_trajectory, origins, next_smoother_init
 
 
@@ -309,7 +308,7 @@ def run_experiment():
              y_prec_samples=y_prec_samples,
              tau0_samples=tau0_samples, tau1_samples=tau1_samples, tau2_samples=tau2_samples,
              rejuvenated_logs=rejuvenated_logs.mean(0),
-             traj_samples=traj_samples, runtime=toc-tic)
+             traj_samples=traj_samples, runtime=toc - tic)
 
 
 def plot_experiment():
