@@ -28,7 +28,7 @@ class TransitionKernel(ConditionalDensityModel):
 
     def log_potential(self, x_t_1: chex.ArrayTree, x_t: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         mu, phi, chol = parameter
-        mean = mu[None:] + phi[None, :] * (x_t_1 - mu[None, :])
+        mean = mu + phi * (x_t_1 - mu)
         return mvn_loglikelihood(x_t, mean, chol)
 
 

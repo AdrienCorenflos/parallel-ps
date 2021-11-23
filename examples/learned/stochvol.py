@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import tensorflow_probability.substrates.jax as tfp
 from jax.experimental.host_callback import id_tap
-from jax.experimental.optimizers import sgd
+from jax.experimental.optimizers import adam
 from matplotlib import pyplot as plt
 
 from examples.models.stochvol import InitObservationPotential, InitialModel, TransitionKernel, get_data, \
@@ -26,37 +26,36 @@ DO_RUN = True
 data = get_data(["USD", "CAD", "CHF"], "2019-11-01", "2021-11-01")
 
 # PS config
-backend = "cpu"
-N = 25  # Number of particles
+backend = "gpu"
+N = 50  # Number of particles
 
 # PMMH config
 N_CHAINS = 10 ** 5  # Number of time steps in the chain
-BURN_IN = N_CHAINS // 10  # Discarded number of steps for stats
-N_GRADIENT_STEPS = N_CHAINS // 10  # Warmup of the proposals
+BURN_IN = 2 * N_CHAINS // 10  # Discarded number of steps for stats
+N_GRADIENT_STEPS = 2 * N_CHAINS // 10  # Warmup of the proposals
 
-use_sequential = True  # use the sequential algorithm instead of the parallel one.
-
+use_sequential = False  # use the sequential algorithm instead of the parallel one.
+use_stationary = True
 T, D = data.shape
 
 # Initial parameters
 mu_prior = tfp.distributions.Normal(0., 1.)
-diag_chol_prior = tfp.distributions.InverseGamma(2., 1.)
-chol_lower_prior = tfp.distributions.Normal(0., 1.)
-phi_prior = tfp.distributions.Uniform(-1., 1.)
+diag_chol_prior = tfp.distributions.InverseGamma(3., 0.5)
+chol_lower_prior = tfp.distributions.Normal(0., 0.1)
+phi_prior = tfp.distributions.Uniform(-0.5, 0.5)
 
 # MCMC parameters
-mcmc_scale = 0.2
+mcmc_scale = 0.05
 
 # Other config
 jax_seed = 0
 jax_key = jax.random.PRNGKey(jax_seed)
 learning_rate = 1e-3
-optimizer = sgd(learning_rate)
+optimizer = adam(learning_rate)
 
 
-def _make_init_weights_and_bias(mu, chol, phi, _):
+def _make_init_weights_and_bias(_):
     # conditional linearization
-    stationary_mean, stationary_chol = get_stationary_distribution(mu, phi, chol)
 
     mu_weights = jnp.zeros((D, D))
     mu_bias = jnp.zeros((D,))
@@ -68,12 +67,9 @@ def _make_init_weights_and_bias(mu, chol, phi, _):
     chol_bias = jnp.zeros((D,))
 
     chol_weights_out = jnp.zeros(((D * (D + 1)) // 2, 3 * D))
-    diag_part = jnp.diag_indices(D)
-    stationary_diag = stationary_chol[jnp.diag_indices(D)]
-    stationary_chol = stationary_chol.at[diag_part].set(jnp.log(stationary_diag))
-    chol_bias_out = stationary_chol[jnp.tril_indices(D)]
+    chol_bias_out = jnp.zeros(((D * (D + 1)) // 2,))
 
-    mean_bias = stationary_mean
+    mean_bias = jnp.zeros((D,))
     mean_weight = jnp.zeros((D, 3 * D))
     mu_params = mu_weights, mu_bias
     chol_params = chol_weights, chol_bias
@@ -84,6 +80,9 @@ def _make_init_weights_and_bias(mu, chol, phi, _):
 
 # DEFINE nu_t and q_t
 def _make_mvn_proposal(params, mu, chol, phi):
+    if use_stationary:
+        return params
+    stationary_mu, stationary_chol = get_stationary_distribution(mu, phi, chol)
     tril = jnp.tril_indices(D)
     diag = jnp.diag_indices(D)
 
@@ -103,7 +102,7 @@ def _make_mvn_proposal(params, mu, chol, phi):
     chol_out = jnp.zeros_like(chol)
     chol_out = chol_out.at[tril].set(chol_tril)
     chol_out = chol_out.at[diag].set(jnp.exp(jnp.diag(chol_out)))
-    return mean, chol_out
+    return stationary_mu + mean, chol_out + stationary_chol
 
 
 class QtModel(DensityModel):
@@ -139,7 +138,7 @@ class NutModel(UnivariatePotentialModel):
 # define the routine
 
 @partial(jax.jit, backend=backend)
-def smc(key, mu, chol, phi, opt_state, gradient_step):
+def smc(key, mu, chol, phi, opt_state, gradient_step, iter_since_update):
     """
     Run a SMC
 
@@ -157,39 +156,38 @@ def smc(key, mu, chol, phi, opt_state, gradient_step):
     ...
     """
     stationary_mu, stationary_chol = get_stationary_distribution(mu, phi, chol)
-
     gen_observation_potential = ObservationKernel(data[1:])
     init_observation_potential = InitObservationPotential(data[0])
     transition_kernel = TransitionKernel(mu, phi, chol)
 
     initial_model = InitialModel(stationary_mu, stationary_chol)
 
-    def loss(qt_params, nut_params):
+    def loss(qt_params):
         if not use_sequential:
             qt = QtModel(qt_params, mu, chol, phi)
-            nut = NutModel(nut_params, mu, chol, phi)
+            nut = NutModel(qt_params, mu, chol, phi)
             result = smoothing(key, qt, nut, transition_kernel, gen_observation_potential, init_observation_potential,
                                initial_model, N=N)
-            return result.ells[-1]
+            return -result.ells[-1]
         else:
             (_, _), ells = seq_smoothing(T, key, transition_kernel, gen_observation_potential, initial_model,
                                          init_observation_potential, N, do_backward_pass=False)
-            return ells[-1]
+            return -ells[-1]
 
     def if_grad_pass(_):
-        value, grads = jax.value_and_grad(loss, [0, 1])(*optimizer.params_fn(opt_state))
-        return value, optimizer.update_fn(0, grads, opt_state)
+        value, grads = jax.value_and_grad(loss)(optimizer.params_fn(opt_state))
+        return -value, optimizer.update_fn(iter_since_update, grads, opt_state)
 
     def otherwise(_):
-        value = loss(*optimizer.params_fn(opt_state))
-        return value, opt_state
+        value = loss(optimizer.params_fn(opt_state))
+        return -value, opt_state
 
-    cond = jnp.logical_and(gradient_step, jnp.logical_not(use_sequential))
+    cond = jnp.all(jnp.array([gradient_step, jnp.logical_not(use_sequential), jnp.logical_not(use_stationary)]))
     return jax.lax.cond(cond, if_grad_pass, otherwise, None)
 
 
 @jax.jit
-def rmh_step(key, mu, chol, phi, step, opt_state, prev_ell, prev_params_log_lik):
+def rmh_step(key, mu, chol, phi, step, opt_state, prev_ell, prev_params_log_lik, iter_since_update):
     # Get keys for each parameter
     triu = jnp.triu_indices(D, 1)
     tril = jnp.tril_indices(D, -1)
@@ -204,7 +202,7 @@ def rmh_step(key, mu, chol, phi, step, opt_state, prev_ell, prev_params_log_lik)
     gradient_step = step < N_GRADIENT_STEPS
 
     key, sample_key = jax.random.split(key, 2)
-    ell, new_opt_state = smc(sample_key, mu_prop, chol_prop, phi_prop, opt_state, gradient_step)
+    ell, new_opt_state = smc(sample_key, mu_prop, chol_prop, phi_prop, opt_state, gradient_step, iter_since_update)
 
     mu_log_lik = jnp.sum(jax.vmap(mu_prior.log_prob)(mu_prop))
     chol_log_lik = jnp.sum(jax.vmap(chol_lower_prior.log_prob)(chol_prop[tril]))
@@ -220,10 +218,10 @@ def rmh_step(key, mu, chol, phi, step, opt_state, prev_ell, prev_params_log_lik)
     accept = u < p_accept
 
     def if_accept(_):
-        return 1, p_accept, mu_prop, chol_prop, phi_prop, new_opt_state, ell, prop_params_log_lik
+        return 1, p_accept, mu_prop, chol_prop, phi_prop, new_opt_state, ell, prop_params_log_lik, ell, 0
 
     def otherwise(_):
-        return 0, p_accept, mu, chol, phi, new_opt_state, prev_ell, prev_params_log_lik
+        return 0, p_accept, mu, chol, phi, new_opt_state, prev_ell, prev_params_log_lik, ell, iter_since_update + 1
 
     return jax.lax.cond(accept, if_accept, otherwise, None)
 
@@ -244,38 +242,48 @@ def sampling_routine(rng_key, n_iter):
     phi_log_lik = jnp.sum(jax.vmap(phi_prior.log_prob)(init_phi))
 
     init_params_log_lik = mu_log_lik + chol_log_lik + phi_log_lik
+    if not use_sequential:
+        if not use_stationary:
+            init_qt_params = jax.vmap(_make_init_weights_and_bias)(data)
+        else:
+            init_qt_params = jax.vmap(
+                lambda _: get_stationary_distribution(init_mu, init_phi, init_chol))(data)
+    else:
+        init_qt_params = None
 
-    init_qt_params = jax.vmap(_make_init_weights_and_bias, [None, None, None, 0])(init_mu, init_phi, init_chol, data)
-    init_nut_params = jax.vmap(_make_init_weights_and_bias, [None, None, None, 0])(init_mu, init_phi, init_chol, data)
-    opt_state_init = optimizer.init_fn((init_qt_params, init_nut_params))
-
+    opt_state_init = optimizer.init_fn(init_qt_params)
     sample_key, rng_key = jax.random.split(rng_key)
 
-    ell_init, _ = smc(sample_key, init_mu, init_chol, init_phi, opt_state_init, False)
+    ell_init, _ = smc(sample_key, init_mu, init_chol, init_phi, opt_state_init, False, 0)
 
     def body(carry, inps):
-        mu, chol, phi, opt_state, ell, params_log_lik = carry
+        mu, chol, phi, opt_state, ell, params_log_lik, proposed_ell, iter_since_update = carry
         i, curr_key = inps
 
-        def _print_fun(j, _):
+        def _print_fun(arg, _):
             # Handmade progress bar function
+            j, ell_val, proposed_ell_val = arg
+            txt = f"\rIteration {j + 1}/{n_iter}, current ell: {ell_val:2f}, proposed ell: {proposed_ell_val:2f}"
             if j + 1 == n_iter:
-                print(f"\rIteration {j + 1}/{n_iter}", flush=True)
+                print(txt, flush=True)
             else:
-                print(f"\rIteration {j + 1}/{n_iter}", end="", flush=True)
+                print(txt, end="", flush=True)
 
-        id_tap(_print_fun, i)
-        accepted, p_accept, mu, chol, phi, opt_state, ell, params_log_lik = rmh_step(curr_key, mu,
-                                                                                     chol, phi, i,
-                                                                                     opt_state, ell,
-                                                                                     params_log_lik)
+        id_tap(_print_fun, (i, ell, proposed_ell))
+        accepted, p_accept, mu, chol, phi, opt_state, ell, params_log_lik, proposed_ell, iter_since_update = rmh_step(
+            curr_key, mu,
+            chol, phi, i,
+            opt_state, ell,
+            params_log_lik,
+            iter_since_update
+        )
 
-        carry = mu, chol, phi, opt_state, ell, params_log_lik
+        carry = mu, chol, phi, opt_state, ell, params_log_lik, proposed_ell, iter_since_update
         save = accepted, p_accept, mu, chol, phi
         return carry, save
 
     keys = jax.random.split(rng_key, n_iter)
-    carry_init = init_mu, init_chol, init_phi, opt_state_init, ell_init, init_params_log_lik
+    carry_init = init_mu, init_chol, init_phi, opt_state_init, ell_init, init_params_log_lik, ell_init, 0
     _, (all_accepted, all_p_accept, mus, chols, phis) = jax.lax.scan(body, carry_init,
                                                                      (jnp.arange(n_iter), keys), )
     return all_accepted, all_p_accept, mus, chols, phis
@@ -297,11 +305,32 @@ def run_experiment():
 
     mus = mus[BURN_IN:]
     chols = chols[BURN_IN:]
+    covs = chols @ jnp.transpose(chols, [0, 2, 1])
     phis = phis[BURN_IN:]
 
     fig, ax = plt.subplots()
-    ax.plot(all_accepted)
-    ax.plot(all_p_accept)
+    ax.plot(cummean_accepted)
+    ax.plot(cummean_p_accept)
+    plt.show()
+
+    fig, ax = plt.subplots()
+    ax.hist(mus.T, alpha=0.5, bins=25)
+    fig.suptitle("mu")
+    plt.show()
+
+    fig, ax = plt.subplots()
+    ax.hist(covs[:, 0, 1].T, alpha=0.5, bins=25)
+    fig.suptitle("cov_cross")
+    plt.show()
+
+    fig, ax = plt.subplots()
+    ax.hist(covs[:, 0, 0].T, alpha=0.5, bins=25)
+    fig.suptitle("cov_diag")
+    plt.show()
+
+    fig, ax = plt.subplots()
+    ax.hist(phis.T, alpha=0.5, bins=25)
+    fig.suptitle("Phi")
     plt.show()
 
 
