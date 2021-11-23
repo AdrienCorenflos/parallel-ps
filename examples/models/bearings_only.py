@@ -12,8 +12,9 @@ import scipy.linalg as linalg
 from jax import lax, jit
 
 from parallel_ps.base import BivariatePotentialModel, PyTree, UnivariatePotentialModel
-from parsmooth import FunctionalModel, MVNSqrt
 from tests.lgssm import mvn_loglikelihood
+from parsmooth.sequential import ekf, eks  # sequential cause we need the log-likelihood just for the experiment.
+from parsmooth.utils import MVNormalParameters
 
 
 class BearingsInitialModel(UnivariatePotentialModel):

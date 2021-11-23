@@ -16,18 +16,16 @@ from parallel_ps.core.resampling import systematic
 from parallel_ps.ffbs_smoother import smoothing as ffbs_smoothing
 from parallel_ps.parallel_smoother import smoothing
 
-# from itertools import product
-
 # CONFIG
 
 backend = "gpu"
-n_smoothers = 10  # number of  times we run the smoother on each dataset
+n_smoothers = 50  # number of  times we run the smoother on each dataset
 
 # SSM Config
-dim_x = [1]
-dim_y = [1]
+dim_x = 1
+dim_y = 1
 
-Ts = [2 ** k - 1 for k in range(2, 15, 2)]
+Ts = [2 ** k - 1 for k in range(3, 16, 1)]
 Ns = [25, 50, 100, 250]
 use_FFBS = False
 
@@ -37,7 +35,7 @@ JAX_KEYS = jax.random.split(jax.random.PRNGKey(42), n_smoothers)
 
 
 def make_model():
-    F = 0.9 * np.eye(dim_x)
+    F = 0.9 * np.eye(1)
     H = np.eye(dim_y, dim_x)
     b = np.zeros((dim_x,))
     c = np.zeros((dim_y,))
@@ -112,7 +110,7 @@ def experiment(T, N):
 
             return ps_result.ells[-1], ps_result.origins
 
-    runtimes = np.empty_like((len(JAX_KEYS),))
+    runtimes = np.empty((len(JAX_KEYS),))
     _, ps_origins = one_smoother(JAX_KEYS[0], ys, (kalman_smoothing_means, kalman_smoothing_covs))
     for i, jax_key in enumerate(JAX_KEYS):
         tic = time.time()
@@ -127,15 +125,15 @@ def experiment(T, N):
 shape = (len(Ts), len(Ns))
 runtime_means = np.empty(shape)
 
-indices = np.recarray(shape + (2,),
+indices = np.recarray(shape,
                       dtype=[("T", int), ("N", int)])
-
 for (m, T), (n, N) in product(
         *map(enumerate, [Ts, Ns]), total=reduce(mul, shape)):
-    curr_kalman_ells, curr_ps_ell_means, curr_ps_ell_vars, ps_unique_ancestors, runtime = experiment(T, N)
+    runtime = experiment(T, N)
 
     runtime_means[m, n] = runtime
-    indices[m, n, :] = np.array([T, N])
+    indices[m, n]["T"] = T
+    indices[m, n]["N"] = N
 
 os.makedirs("./output", exist_ok=True)
 np.savez(f"./output/result_runtime-{use_FFBS}-{backend}", indices=indices, runtime_means=runtime_means)
