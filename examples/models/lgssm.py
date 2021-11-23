@@ -1,5 +1,6 @@
 import chex
 import jax.numpy as jnp
+import jax.random
 import numpy as np
 
 from parallel_ps.base import BivariatePotentialModel, PyTree
@@ -73,3 +74,56 @@ def get_data(m0, chol_P0, F, H, chol_R, chol_Q, b, c, T):
         observations[i] = y
 
     return true_states, observations
+
+
+def get_data_jax(k, m0, chol_P0, F, H, chol_R, chol_Q, b, c, T):
+    """
+    Parameters
+    ----------
+    k: chex.PRNGKey
+        Sampling key
+    m0: array_like
+        initial_mean
+    chol_P0: array_like
+        initial cholesky cov
+    F: array_like
+        transition matrix
+    H: array_like
+        transition matrix
+    chol_R: array_like
+        observation model cholesky cov
+    chol_Q: array_like
+        noise cholesky cov
+    b: array_like
+        transition offset
+    c: array_like
+        observation offset
+    T: int
+        number of time steps
+
+    Returns
+    -------
+    true_states: array_like
+        array of true states
+    observations: array_like
+        array of observations
+    """
+
+    dim_y = H.shape[0]
+    dim_x = F.shape[0]
+
+    x_key, y_key, init_key = jax.random.split(k, 3)
+    normals_x = jax.random.normal(x_key, (T, dim_x))
+    normals_y = jax.random.normal(y_key, (T, dim_y))
+    x0 = m0 + chol_P0 @ jax.random.normal(init_key, (dim_x,))
+
+    def body(carry, inputs):
+        x = carry
+        n_x, n_y = inputs
+        x = F @ x + chol_Q @ n_x + b
+        y = H @ x + chol_R @ n_y + c
+        return x, (x, y)
+
+    _, (true_states, observations) = jax.lax.scan(body, x0, (normals_x, normals_y))
+
+    return jnp.insert(true_states, 0, x0), observations
