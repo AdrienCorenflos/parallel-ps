@@ -76,7 +76,7 @@ class ApproximatedConditionalStationaryProposalModel(DensityModel):
         return means[:, None, None] + chols[..., None] * eps
 
     def log_potential(self, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
-        sigma_2, y = parameters
+        sigma_2, y = parameter
         mean, chol = self._make_one(sigma_2, y)
         return mvn_loglikelihood(particle, mean, chol, is_diag=True)
 
