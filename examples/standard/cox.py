@@ -73,7 +73,7 @@ class ApproximatedConditionalStationaryProposalModel(DensityModel):
         sigma_2, ys = self.parameters
         means, chols = jax.vmap(self._make_one, [None, 0])(sigma_2, ys)
         eps = jax.random.normal(key, (self.T, N, 1))
-        return means[:, None, None] + chols[..., None] * eps
+        return means[:, None, None] + chols[:, None, None] * eps
 
     def log_potential(self, particle: chex.ArrayTree, parameter: PyTree) -> jnp.ndarray:
         sigma_2, y = parameter
