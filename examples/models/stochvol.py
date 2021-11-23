@@ -22,7 +22,7 @@ class TransitionKernel(ConditionalDensityModel):
 
     def sample(self, key: chex.PRNGKey, x_t_1: chex.ArrayTree, parameter: PyTree) -> chex.ArrayTree:
         mu, phi, chol = parameter
-        mean = mu[None:] + phi[None, :] * (x_t_1 - mu[None, :])
+        mean = mu[None, :] + phi[None, :] * (x_t_1 - mu[None, :])
         eps = jax.random.normal(key, x_t_1.shape)
         return mean + jnp.einsum("ij,kj->ki", chol, eps)
 
