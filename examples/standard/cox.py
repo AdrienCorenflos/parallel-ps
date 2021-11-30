@@ -7,6 +7,8 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
+import tqdm
+from jax.experimental.host_callback import id_print
 from tqdm.contrib.itertools import product
 
 from examples.models.cox import get_data, TransitionKernel, ObservationKernel, InitObservationPotential, InitialModel
@@ -20,17 +22,17 @@ from parallel_ps.utils import mvn_loglikelihood
 # from itertools import product
 
 backend = "gpu"
-n_smoothers = 100  # number of  times we run the smoother on each dataset
+n_smoothers = 100  # number of  times we run the smoother on the dataset
 
 # SSM Config
 mu = 0.
 rho = 0.9
 sigma = 0.5
 
-Ts = np.logspace(5, 14, 9, base=2, dtype=int) - 1
-Ns = [25, 50, 75, 100]
-use_FFBS = False
-use_conditional_proposal = True
+Ts = np.logspace(5, 12, num=7, base=2, dtype=int)
+Ns = np.logspace(1, 3, base=10, num=25, dtype=int)
+use_FFBS = True
+use_conditional_proposal = False
 
 # data seed
 np.random.seed(0)
@@ -91,14 +93,14 @@ def phi(x):
 
     sig_2 = sigma ** 2
     sig_4 = sigma ** 4
-
-    res = -0.5 * (T + 1) / sig_2 + 0.5 * (1 - rho ** 2) * (x0 - mu) ** 2 / sig_4
+    const = -0.5 * (T + 1) / sig_2
+    res = 0.5 * (1 - rho ** 2) * (x0 - mu) ** 2 / sig_4
     res = res + 0.5 * jnp.sum((x_t_p_1 - mu - rho * (x_t - mu)) ** 2) / sig_4
-    return res
+    return res + const
 
 
-def experiment(T, N):
-    xs, ys = get_data(mu, rho, sigma, T)
+def experiment(ys, N):
+    T = ys.shape[0]
     observation_model = ObservationKernel(ys[1:])
     initial_observation_model = InitObservationPotential(ys[0])
 
@@ -147,13 +149,15 @@ batch_scores = np.empty(shape + (n_smoothers,))
 indices = np.recarray(shape,
                       dtype=[("T", int), ("N", int)])
 
-for (m, T), (n, N) in product(
-        *map(enumerate, [Ts, Ns]), total=reduce(mul, shape)):
-    runtime, batch_score = experiment(T, N)
+xs, ys = get_data(mu, rho, sigma, max(Ts))
 
+for (m, T_), (n, N)in product(
+        *map(enumerate, [Ts, Ns]), total=reduce(mul, shape)):
+
+    runtime, batch_score = experiment(ys[:T_], N)
     runtime_means[m, n] = runtime
     batch_scores[m, n, :] = batch_score
-    indices[m, n]["T"] = T
+    indices[m, n]["T"] = T_
     indices[m, n]["N"] = N
 
 os.makedirs("./output", exist_ok=True)
