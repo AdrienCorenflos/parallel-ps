@@ -43,7 +43,7 @@ KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sa
 KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
 use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
-use_sequential = True  # use the sequential algorithm instead of the parallel one.
+use_sequential = False  # use the sequential algorithm instead of the parallel one.
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
@@ -61,7 +61,7 @@ m0 = jnp.zeros((1,))
 chol_P0 = jnp.eye(1)
 
 # Other config
-jax_seed = 0
+jax_seed = 42
 jax_key = jax.random.PRNGKey(jax_seed)
 
 

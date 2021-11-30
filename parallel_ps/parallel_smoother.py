@@ -156,11 +156,6 @@ def _smoothing(key: chex.PRNGKey,
                                                       n_samples=N))
 
     final_states, *_ = dc_map(inputs, combination_operator)
-    if conditional_trajectory is not None:
-        final_trajectories = jax.tree_map(lambda z: z[:, 1:], final_states.trajectories)
-        final_log_weights = final_states.log_weights[:, 1:]
-        final_origins = final_states.origins[:, 1:]
-        final_states = DSMCState(final_trajectories, final_log_weights, ells, final_origins)
     return final_states
 
 
