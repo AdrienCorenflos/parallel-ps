@@ -7,8 +7,6 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
-import tqdm
-from jax.experimental.host_callback import id_print
 from tqdm.contrib.itertools import product
 
 from examples.models.cox import get_data, TransitionKernel, ObservationKernel, InitObservationPotential, InitialModel
@@ -22,6 +20,7 @@ from parallel_ps.utils import mvn_loglikelihood
 # from itertools import product
 
 backend = "gpu"
+device = jax.devices(backend)[1]
 n_smoothers = 100  # number of  times we run the smoother on the dataset
 
 # SSM Config
@@ -30,7 +29,7 @@ rho = 0.9
 sigma = 0.5
 
 Ts = np.logspace(5, 12, num=7, base=2, dtype=int)
-Ns = np.logspace(1, 3, base=10, num=25, dtype=int)
+Ns = np.logspace(1, 3, base=10, num=7, dtype=int)
 use_FFBS = True
 use_conditional_proposal = False
 
@@ -66,10 +65,11 @@ class ApproximatedConditionalStationaryProposalModel(DensityModel):
     def _make_one(sigma_2, y):
         exp_mu = jnp.exp(mu)
         exp_2mu = jnp.exp(2 * mu)
-        r_2 = (sigma_2 * exp_2mu + exp_mu)
-        mean = mu + jnp.exp(mu) * (y - exp_mu) * sigma_2 / r_2
-        chol = (sigma_2 - exp_2mu / r_2) ** 0.5
-        return mean, chol
+
+        G = sigma_2 * exp_mu / (exp_2mu * sigma_2 + exp_mu)
+        approx_mean = m + G * (y - exp_mu)
+        approx_cov = sigma_2 - G * sigma_2 * exp_mu
+        return approx_mean, approx_cov ** 0.5
 
     def sample(self, key: chex.PRNGKey, N: int) -> chex.ArrayTree:
         sigma_2, ys = self.parameters
@@ -121,7 +121,7 @@ def experiment(ys, N):
 
             return ps_result.trajectories
 
-    @partial(jax.jit, backend=backend)
+    @partial(jax.jit, device=device)
     def compute_score_func(k):
         trajectories = one_smoother(k)
         trajectory_score = jax.vmap(phi, in_axes=[1])(trajectories)
