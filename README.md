@@ -11,7 +11,7 @@ time steps.
 
 The way we achieve this is by re-phrasing the smoothing problem as a divide-and-conquer operation over partial
 smoothing. In order to do inference in this now nested structure, we require that one is able to sample from proposals
-marginals $q_t$ at each time $t$. This can either be done independently
+marginals q_t at each time t. This can either be done independently
 (in O(log(1)) parallel runtime), or pathwise (in O(log(T)) parallel runtime) if one is using Gaussian smoothing
 approximations.
 
