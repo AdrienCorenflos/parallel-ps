@@ -1,6 +1,6 @@
 import os
 import time
-from functools import reduce, partial
+from functools import reduce
 from operator import mul
 
 import chex
@@ -13,7 +13,7 @@ from tqdm.contrib.itertools import product
 from examples.models.cox import get_data, TransitionKernel, ObservationKernel, InitObservationPotential, InitialModel
 from parallel_ps.base import DensityModel, PyTree
 from parallel_ps.core.resampling import systematic
-from parallel_ps.parallel_smoother import smoothing
+from parallel_ps.parallel_smoother import smoothing, loss_fn
 # CONFIG
 from parallel_ps.utils import mvn_loglikelihood
 
@@ -27,7 +27,7 @@ mu = 0.
 rho = 0.9
 sigma = 0.5
 
-Ts = np.logspace(6, 14, 8, base=2, dtype=int)
+Ts = [100]
 Ns = [25, 50, 75, 100, 125, 150, 175, 200]
 
 # data seed
@@ -37,8 +37,9 @@ JAX_KEYS = jax.random.split(jax.random.PRNGKey(42), n_smoothers)
 transition_model = TransitionKernel(mu, sigma, rho)
 initial_model = InitialModel(mu, sigma, rho)
 
-B = 4  # number of parallel smoothers to learn the proposal
-n_iter = 10
+M = 25  # number of particles for learning the proposals
+
+n_iter = 100
 learning_rate = 1e-3
 optimizer = adam(learning_rate)
 opt_key = jax.random.PRNGKey(31415926)
@@ -100,11 +101,12 @@ def experiment(T, N):
         opt_state_init = optimizer.init_fn((init_mu, init_chol_log, init_mu, init_chol_log))
 
         def loss(qt_mean, qt_log_chol, nu_t_mean, nu_t_log_chol, k):
-            keys = jax.random.split(k, B)
-            fun = lambda k_: loss_one(qt_mean, qt_log_chol, nu_t_mean, nu_t_log_chol, k_)
-            phi_res = jax.vmap(fun)(keys)
-            phi_var = jnp.var(phi_res, 0)
-            return phi_var
+            proposal_model = ProposalModel(qt_mean, jnp.exp(qt_log_chol), T)
+            nut_model = ProposalModel(nu_t_mean, jnp.exp(nu_t_log_chol), T)
+            res = loss_fn(k, proposal_model, nut_model,
+                          transition_model, observation_model, initial_model,
+                          initial_observation_model, N=M)
+            return res
 
         def loop(opt_state, inputs):
             i, k = inputs

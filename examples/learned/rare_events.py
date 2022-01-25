@@ -24,13 +24,13 @@ DO_RUN = True
 
 # PS config
 backend = "gpu"
-N = 5_000  # Number of particles
+N = 50  # Number of particles
 B = 1_000  # number of PSs for stats
 
 use_sequential = True  # use the sequential algorithm instead of the parallel one.
 
 # Model config
-T, D = 50, 2
+T, D = 1_000, 2
 m0 = jnp.zeros((D,))
 chol0 = jnp.eye(D)
 sv = 0.2
@@ -41,7 +41,7 @@ jax_seed = 42
 jax_key = jax.random.PRNGKey(jax_seed)
 
 
-def test_fun(trajs):
+def integrand(trajs):
     # test function for the Fisher score
     res = D * jnp.log(sv)
     squared_diff_x = jnp.sum((trajs[1:] - phi(trajs[:-1])) ** 2, -1)
@@ -97,7 +97,7 @@ def run_experiment():
                 print(f"\rIteration {j + 1}/{B}", end="", flush=True)
 
         ell, (trajs, _) = smc(op_key)
-        return id_tap(_print_fun, i, result=i + 1), (test_fun(trajs), ell)
+        return id_tap(_print_fun, i, result=i + 1), (integrand(trajs), ell)
 
     @partial(jax.jit, backend=backend)
     def get_res():
@@ -114,21 +114,6 @@ def run_experiment():
     print("ELL stats", stats.describe(ells))
 
     print("Fisher stats", stats.describe(test_res))
-
-
-#
-#
-# means_std = trajs_std.mean(0)
-#     stds_std = trajs_std.std(0)
-#     cmap = cm.get_cmap("viridis")
-#     linspace = np.arange(0, T)
-#     for i in range(D):
-#         plt.plot(linspace, means_std[:, i], color=cmap(i / D))
-#         plt.fill_between(linspace,
-#                          means_std[:, i] - 1.96 * stds_std[:, i],
-#                          means_std[:, i] + 1.96 * stds_std[:, i],
-#                          alpha=0.3, color=cmap(i / (D - 1) if D > 1 else 0.5))
-#     plt.show()
 
 
 if DO_RUN:

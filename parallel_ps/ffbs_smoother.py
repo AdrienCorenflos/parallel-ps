@@ -19,6 +19,7 @@
 #  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
+
 import math
 from functools import partial
 
@@ -72,8 +73,7 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel,
     ell: float
         loglikelihood estimate
     """
-    # In the current state of JAX, you should not JIT a PMAP operation as this induces communication
-    # over devices instead of using shared memory.
+
     if M is None:
         M = N
     filter_key, smoother_key = jax.random.split(key, 2)

@@ -16,7 +16,7 @@ from matplotlib import pyplot as plt
 from examples.models.stochvol import InitObservationPotential, InitialModel, TransitionKernel, get_data, \
     ObservationKernel, get_stationary_distribution
 from parallel_ps.base import PyTree, DensityModel
-from parallel_ps.parallel_smoother import smoothing
+from parallel_ps.parallel_smoother import smoothing, loss_fn
 from parallel_ps.sequential import smoothing as seq_smoothing
 from tests.lgssm import mvn_loglikelihood
 
@@ -81,9 +81,9 @@ def smc(key, opt_state, n_iter):
 
         if not use_sequential:
             qt = QtModel(stationary_mu, stationary_chol)
-            result = smoothing(loss_key, qt, qt, transition_kernel, gen_observation_potential,
-                               init_observation_potential, initial_model, N=N)
-            return -result.ells[-1]
+            result = loss_fn(loss_key, qt, qt, transition_kernel, gen_observation_potential,
+                             init_observation_potential, initial_model, N=N)
+            return result
         else:
             (_, _), ells = seq_smoothing(T, loss_key, transition_kernel, gen_observation_potential, initial_model,
                                          init_observation_potential, N, do_backward_pass=False)

@@ -3,7 +3,6 @@ from matplotlib import pyplot as plt
 from scipy import stats
 
 learned_res = np.load("./output/cox-learned-gpu.npz")
-learned_res = np.load("./output/cox-learned-gpu.npz")
 
 # I created the indices poorly...
 index = learned_res["indices"]
