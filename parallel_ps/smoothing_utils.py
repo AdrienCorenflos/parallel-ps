@@ -35,9 +35,12 @@ def make_log_weight_fn_and_params_inputs(nut_log_potential, nut_params, nut_batc
     batched_Mt_params = jax.tree_map(_pad_params, batched_Mt_params)
     batched_Gt_params = jax.tree_map(_pad_params, batched_Gt_params)
 
+    params = batched_nut_params, batched_Mt_params, batched_Gt_params
+
     @jax.jit
     def log_weight_function(x_t_1, x_t, params_t):
         nut_params_t, Mt_params_t, Gt_params_t = params_t
+
         nut_params_t = rejoin_batched_and_static_params(nut_params_t, static_nut_params,
                                                         nut_batched_flag)
         Mt_params_t = rejoin_batched_and_static_params(Mt_params_t, static_Mt_params,
@@ -50,8 +53,6 @@ def make_log_weight_fn_and_params_inputs(nut_log_potential, nut_params, nut_batc
         Gt_log_weight = Gt_log_potential(x_t_1, x_t, Gt_params_t)
 
         return Gt_log_weight + Mt_log_weight - nut_log_weight
-
-    params = batched_nut_params, batched_Mt_params, batched_Gt_params
 
     return log_weight_function, params
 
