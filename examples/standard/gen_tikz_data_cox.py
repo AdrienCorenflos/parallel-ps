@@ -75,7 +75,7 @@ ax.set_title("Parallel")
 
 plt.show()
 
-fig, axes = plt.subplots(ncols=2, figsize=(15, 6), sharex=True, sharey=True)
+_, axes = plt.subplots(ncols=2, figsize=(15, 6), sharex=True, sharey=True)
 sns.lineplot(data=runtime_df.reset_index(), x="T", y="Parallel", hue="N", ax=axes[0])
 sns.lineplot(data=runtime_df.reset_index(), x="T", y="Sequential", hue="N", ax=axes[1])
 axes[0].set_ylabel("Mean runtime")

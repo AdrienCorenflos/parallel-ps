@@ -39,9 +39,9 @@ m0 = jnp.zeros((D,))
 chol0 = jnp.eye(D)
 phi = lambda x: x
 
-SVS = np.logspace(-2, 0, base=2, num=10)
-TS = np.logspace(3, 15, base=2, dtype=int, num=12)
-NS = np.logspace(5, 14, dtype=int, base=2, num=9)
+SVS = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]
+TS = [32,  64, 128, 256, 512]
+NS = [25, 50, 100, 250, 500, 1_000, 2_500, 5_000]
 # Other config
 
 jax_seed = 42
@@ -105,7 +105,7 @@ def loop_body(i, op_key, sv, bound, T, n_particles):
             print(f"\rIteration {j + 1}/{B}", end="", flush=True)
 
     ell, (trajs, _) = smc(op_key, bound, sv, T, n_particles)
-    return id_tap(_print_fun, i, result=i + 1), (integrand(trajs, sv), ell)
+    return i+1, (integrand(trajs, sv), ell)
 
 
 @partial(jax.jit, backend=backend, static_argnums=(2, 3))
@@ -121,25 +121,27 @@ def run_experiment():
     variances = np.empty_like(runtimes)
 
     indices = np.recarray(variances.shape,
-                          dtype=[("T", int), ("N", int)])
+                          dtype=[("T", int), ("N", int), ("SV", float)])
 
     for j, N in enumerate(tqdm.tqdm(NS)):
         indices[:, j, :]["N"] = N
-        for k, T in enumerate(TS):
+        for k, T in enumerate(tqdm.tqdm(TS)):
             indices[:, j, k]["T"] = T
+            indices[:, j, k]["SV"] = SVS
             # compilation loop with very high variance to go fast.
             log_weights_bound = -D * (math.log(0.5) + 50 * math.log(2 * math.pi)) * np.ones((T - 1,))
             log_weights_bound = np.insert(log_weights_bound, 0, -D * 0.5 * math.log(2 * math.pi))
             try:
                 test_res, ells = get_res(50, log_weights_bound, T, N)
                 ells.block_until_ready()
-            except MemoryError:
-                runtimes[:, N, T] = np.inf
-                means[:, N, T] = np.nan
-                means[:, N, T] = np.nan
+            except:  # noqa: I don't care what the error is, it's a memory issue anyway.
+                runtimes[:, j, k] = np.inf
+                means[:, j, k] = np.nan
+                means[:, j, k] = np.nan
                 continue
 
-            for i, sv in enumerate(SVS):
+            for i, sv in enumerate(tqdm.tqdm(SVS)):
+
                 log_weights_bound = -D * (math.log(sv) + 0.5 * math.log(2 * math.pi)) * np.ones((T - 1,))
                 log_weights_bound = np.insert(log_weights_bound, 0, -D * 0.5 * math.log(2 * math.pi))
 
