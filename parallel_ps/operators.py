@@ -163,7 +163,9 @@ def lazy_operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn:
 
 
 def _lazy_resampling(key, xs, ys, log_w_xs, log_w_ys, params_t, log_weight_fn, n_samples, log_weight_bound_t):
-    def resample_one(op_key, m):
+    def resample_one(op_key):
+        init_key, loop_key = jax.random.split(op_key)
+
         def cond(carry):
             accepted, *_ = carry
             return ~accepted
@@ -172,27 +174,24 @@ def _lazy_resampling(key, xs, ys, log_w_xs, log_w_ys, params_t, log_weight_fn, n
             _, i, j, k, n_iter = carry
 
             log_w = log_weight_fn(xs[i], ys[j], params_t) + log_w_ys[j] + log_w_xs[i]
-            # id_print((i, j), what="i, j")
 
             k, u_k, ij_k = jax.random.split(k, 3)
             log_u = jnp.log(jax.random.uniform(u_k))
-            # id_print(log_u, what="log_u")
-            # id_print(log_w - log_weight_bound_t, what="log_w - log_weight_bound_t")
 
             accept = log_u < log_w - log_weight_bound_t
 
             i, j = jax.lax.select(accept, jnp.array([i, j]), jax.random.randint(ij_k, (2,), 0, n_samples))
 
-            # id_print(accept, what="accept")
             return accept, i, j, k, n_iter + 1
 
-        _, I, J, _, total_n_iter = jax.lax.while_loop(cond, body, (False, m, m, op_key, 0))
+        init_I, init_J = jax.random.randint(init_key, (2,), 0, n_samples)
+        _, I, J, _, total_n_iter = jax.lax.while_loop(cond, body, (False, init_I, init_J, loop_key, 0))
 
         return I, J, total_n_iter
 
     keys = jax.random.split(key, n_samples)
 
-    idx_x, idx_y, n_iter_array = jax.vmap(resample_one)(keys, np.arange(n_samples, dtype=int))
+    idx_x, idx_y, n_iter_array = jax.vmap(resample_one)(keys)
 
     return idx_x, idx_y
 
