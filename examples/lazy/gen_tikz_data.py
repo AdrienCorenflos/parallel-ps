@@ -1,46 +1,37 @@
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from statsmodels.tsa.stattools import acf
+from examples.lazy.rare_events import NS, TS, SVS
 
 lazy_res = np.load(f"./output/rare-events-False-True.npz")
 seq_res = np.load(f"./output/rare-events-True-True.npz")
 par_res = np.load(f"./output/rare-events-False-False.npz")
 
-fig, axes = plt.subplots(ncols=3, sharex=True, sharey=True)
-axes[0].plot(par_res["indices"][4]["T"].T, par_res['runtimes'][2].T)
-axes[0].set_xscale("log", base=2)
-axes[0].set_yscale("log", base=10)
 
-axes[1].plot(lazy_res["indices"][4]["T"].T, lazy_res['runtimes'][2].T)
-axes[1].set_xscale("log", base=2)
-axes[1].set_yscale("log", base=10)
+par_runtime_df = pd.DataFrame(columns=pd.MultiIndex.from_product([TS, NS]), index=SVS)
+lazy_runtime_df = pd.DataFrame(columns=pd.MultiIndex.from_product([TS, NS]), index=SVS)
+seq_runtime_df = pd.DataFrame(columns=pd.MultiIndex.from_product([TS, NS]), index=SVS)
 
-axes[2].plot(seq_res["indices"][4]["T"].T, seq_res['runtimes'][2].T)
-axes[2].set_xscale("log", base=2)
-axes[2].set_yscale("log", base=10)
-plt.show()
+for i in range(len(SVS)):
+    par_runtime_df.iloc[i] = par_res['runtimes'][i].T.ravel()
+    lazy_runtime_df.iloc[i] = lazy_res['runtimes'][i].T.ravel()
+    seq_runtime_df.iloc[i] = seq_res['runtimes'][i].T.ravel()
 
 
-fig, axes = plt.subplots(ncols=3, sharex=True, sharey=True)
-axes[0].plot(par_res["indices"][4]["T"].T, par_res['variances'][2].T)
-axes[0].set_xscale("log", base=2)
-axes[0].set_yscale("log", base=10)
+par_var_df = pd.DataFrame(columns=pd.MultiIndex.from_product([TS, NS]), index=SVS)
+lazy_var_df = pd.DataFrame(columns=pd.MultiIndex.from_product([TS, NS]), index=SVS)
+seq_var_df = pd.DataFrame(columns=pd.MultiIndex.from_product([TS, NS]), index=SVS)
 
-axes[1].plot(lazy_res["indices"][4]["T"].T, lazy_res['variances'][2].T)
-axes[1].set_xscale("log", base=2)
-axes[1].set_yscale("log", base=10)
-
-axes[2].plot(seq_res["indices"][4]["T"].T, seq_res['variances'][2].T)
-axes[2].set_xscale("log", base=2)
-axes[2].set_yscale("log", base=10)
-plt.show()
-
-print(f"Sequential var/time: \n {seq_res['runtimes'][0] / seq_res['variances'][0]}")
-# print(f"Parallel run took: \n {par_res['runtimes']}")
+for i in range(len(SVS)):
+    par_var_df.iloc[i] = par_res['variances'][i].T.ravel()
+    lazy_var_df.iloc[i] = lazy_res['variances'][i].T.ravel()
+    seq_var_df.iloc[i] = seq_res['variances'][i].T.ravel()
 
 
-print(f"Lazy var/time: \n {lazy_res['runtimes'][0] / lazy_res['variances'][0]}")
-# print(f"Parallel run variance: \n {par_res['variances']}")
+print(lazy_runtime_df)
+print(lazy_var_df)
+
+print(seq_runtime_df)
+print(seq_var_df)
 
 

@@ -136,7 +136,7 @@ def run_experiment():
             except:  # noqa: I don't care what the error is, it's a memory issue anyway.
                 runtimes[:, j, k] = np.inf
                 means[:, j, k] = np.nan
-                means[:, j, k] = np.nan
+                variances[:, j, k] = np.nan
                 continue
 
             for i, sv in enumerate(tqdm.tqdm(SVS)):
@@ -153,12 +153,12 @@ def run_experiment():
                 runtimes[i, j, k] = (toc - tic) / B
     return indices, means, variances, runtimes
 
+if __name__ == "__main__":
+    res_indices, res_means, res_variances, res_runtimes = run_experiment()
 
-res_indices, res_means, res_variances, res_runtimes = run_experiment()
-
-os.makedirs("./output", exist_ok=True)
-np.savez(f"./output/rare-events-{use_sequential}-{LAZY}",
-         indices=res_indices,
-         means=res_means,
-         variances=res_variances,
-         runtimes=res_runtimes)
+    os.makedirs("./output", exist_ok=True)
+    np.savez(f"./output/rare-events-{use_sequential}-{LAZY}",
+             indices=res_indices,
+             means=res_means,
+             variances=res_variances,
+             runtimes=res_runtimes)
