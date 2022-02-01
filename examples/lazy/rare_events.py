@@ -27,11 +27,10 @@ DO_RUN = True
 
 # PS config
 backend = "gpu"
-B = 25  # number of PSs for stats
+B = 100  # number of PSs for stats
 
 use_sequential = False  # use the sequential algorithm instead of the parallel one.
-DO_LEARN = True
-LAZY = True
+LAZY = False
 
 # Model config
 D = 1
@@ -39,7 +38,7 @@ m0 = jnp.zeros((D,))
 chol0 = jnp.eye(D)
 phi = lambda x: x
 
-SVS = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]
+SVS = [0.2, 0.3, 0.4, 0.5]
 TS = [32,  64, 128, 256, 512]
 NS = [25, 50, 100, 250, 500, 1_000, 2_500, 5_000]
 # Other config
