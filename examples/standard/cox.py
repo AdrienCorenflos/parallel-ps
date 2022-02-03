@@ -1,3 +1,5 @@
+""" Experiment definition for the comparison to FFBS """
+
 import os
 import time
 from functools import reduce, partial

@@ -1,5 +1,5 @@
 """
-Bearings-only smoothing experiment design
+Constrained random walk smoothing experiment design
 """
 # IMPORTS
 import math

@@ -1,3 +1,4 @@
+""" LGSSM model def """
 import chex
 import jax.numpy as jnp
 import jax.random
