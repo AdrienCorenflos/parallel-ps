@@ -21,7 +21,6 @@ from parallel_ps.sequential import smoothing as seq_smoothing
 
 # CONFIG
 
-# jax.config.update("jax_enable_x64", False)  # We need int64 for the Hilbert sorting.
 DO_RUN = True
 
 # PS config

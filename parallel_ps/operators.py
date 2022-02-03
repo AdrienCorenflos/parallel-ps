@@ -96,7 +96,7 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
 def lazy_operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Callable[[PyTree, PyTree, Any], float],
                   n_samples: int):
     """
-    Operator corresponding to the lazy operation of the dSMC algorithm.
+    Operator corresponding to the lazy rejection sampling operation of the dSMC algorithm.
     It implements both conditional (for conditional dSMC) and non-conditional operations.
 
     Parameters

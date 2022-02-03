@@ -20,6 +20,8 @@ rejuvenation.
 
 Finally, we implement a lazy resampling scheme to improve the sampling capabilities of our algorithm.
 
+All the examples are located in the `examples` folder.  
+
 For more details, we refer to our article.
 
 ## Installation
@@ -62,8 +64,8 @@ run `pip install -r requirements-examples.txt`
 ## Contact information
 
 This library was developed by Adrien Corenflos. For any code related question feel free to open a discussion in the
-issues tab, and for more technical questions please send an email to the article corresponding email address adrien[dot]
-corenflos[at]aalto[dot]fi.
+issues tab, and for more technical questions please email the article corresponding author 
+adrien[dot]corenflos[at]aalto[dot]fi.
 
 ## How to cite
 

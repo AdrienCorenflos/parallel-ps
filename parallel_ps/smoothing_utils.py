@@ -3,7 +3,7 @@ from typing import Callable, Any
 
 import jax
 from jax import numpy as jnp, tree_map, vmap
-from jax._src.scipy.special import logsumexp
+from jax.scipy.special import logsumexp
 
 from parallel_ps.base import split_batched_and_static_params, rejoin_batched_and_static_params, PyTree
 

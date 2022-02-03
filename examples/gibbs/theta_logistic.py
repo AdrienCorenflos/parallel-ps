@@ -44,6 +44,7 @@ KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to 
 
 use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
 use_sequential = False  # use the sequential algorithm instead of the parallel one.
+
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
 T = data.shape[0]
