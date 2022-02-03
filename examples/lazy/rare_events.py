@@ -28,7 +28,7 @@ backend = "gpu"
 B = 100  # number of PSs for stats
 
 use_sequential = False  # use the sequential algorithm instead of the parallel one.
-LAZY = False
+LAZY = True
 
 # Model config
 D = 1
@@ -36,7 +36,7 @@ m0 = jnp.zeros((D,))
 chol0 = jnp.eye(D)
 phi = lambda x: x
 
-SVS = [0.2, 0.3, 0.4, 0.5]
+SVS = [0.3, 0.4, 0.5]
 TS = [32, 64, 128, 256, 512]
 NS = [25, 50, 100, 250, 500, 1_000, 2_500, 5_000]
 # Other config
@@ -129,7 +129,7 @@ def run_experiment():
             log_weights_bound = -D * (math.log(0.5) + 50 * math.log(2 * math.pi)) * np.ones((T - 1,))
             log_weights_bound = np.insert(log_weights_bound, 0, -D * 0.5 * math.log(2 * math.pi))
             try:
-                test_res, ells = get_res(50, log_weights_bound, T, N)
+                test_res, ells = get_res(1., log_weights_bound, T, N)
                 ells.block_until_ready()
             except:  # noqa: I don't care what the error is, it's a memory issue anyway.
                 runtimes[:, j, k] = np.inf

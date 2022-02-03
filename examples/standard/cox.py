@@ -20,7 +20,7 @@ from parallel_ps.utils import mvn_loglikelihood
 
 DO_RUN = True
 backend = "gpu"
-device = jax.devices(backend)[1]
+device = jax.devices(backend)[0]
 n_smoothers = 100  # number of  times we run the smoother on the dataset
 
 # SSM Config
