@@ -24,8 +24,8 @@ import math
 from functools import partial
 from typing import Callable
 
+import jax
 import jax.numpy as jnp
-import jax.ops
 import numpy as np
 
 from parallel_ps.base import PyTree

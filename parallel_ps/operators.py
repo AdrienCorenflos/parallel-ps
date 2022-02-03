@@ -62,6 +62,7 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
         Number of samples in the resampling
     conditional: bool, optional
         Is this the conditional operator? Default is False.
+
     Returns
     -------
 

@@ -24,10 +24,10 @@ DO_RUN = True
 
 # PS config
 backend = "gpu"
-N = 50  # Number of particles
+N = 250  # Number of particles
 B = 1_000  # number of PSs for stats
 
-use_sequential = True  # use the sequential algorithm instead of the parallel one.
+use_sequential = False  # use the sequential algorithm instead of the parallel one.
 
 # Model config
 T, D = 1_000, 2
