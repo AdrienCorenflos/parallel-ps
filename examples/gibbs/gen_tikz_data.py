@@ -41,4 +41,3 @@ acf_df = pd.DataFrame(data=np.stack([seq_acf_data, par_acf_data], -1),
                       columns=["Sequential", "Parallel"])
 acf_df.index.rename("lag", inplace=True)
 acf_df.to_csv(f"./output/acf-x0.csv")
-

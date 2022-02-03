@@ -8,7 +8,6 @@ from parsmooth.utils import MVNormalParameters
 
 from parallel_ps.base import NullPotentialModel, GaussianDensity
 from parallel_ps.core.resampling import systematic
-from parallel_ps.ffbs_smoother import smoothing as ffbs_smoothing
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parallel_ps.sequential import smoothing as sequential_smoothing
 from .lgssm import LinearGaussianObservationModel, LinearGaussianTransitionModel, get_data
@@ -27,8 +26,7 @@ def pytest_config():
 @pytest.mark.parametrize("N", [100])
 @pytest.mark.parametrize("conditional", [True, False])
 @pytest.mark.parametrize("ffbs", [True, False])
-@pytest.mark.parametrize("sequential", [True, False])
-def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs, sequential):
+def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs):
     np.random.seed(np_seed)
     rng_key = jax.random.PRNGKey(jax_seed)
 
@@ -78,16 +76,7 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs, sequ
 
     initial_model = GaussianDensity(m0, chol_P0)
 
-    if ffbs:
-        smoother = jax.vmap(
-            lambda k: ffbs_smoothing(k, proposal_model, transition_model, observation_model, initial_model,
-                                     NullPotentialModel(), N, N))
-
-        smoother_solutions, _, ells = smoother(jax.random.split(rng_key, 10))
-        np.testing.assert_allclose(ells.mean(),
-                                   kalman_ell, rtol=1e-2)
-        smoother_solution = smoother_solutions[0]
-    elif conditional:
+    if conditional:
         rng_key, gibbs_key = jax.random.split(rng_key)
         init_trajectory = proposal_model.sample(rng_key, 1)[:, 0]
 
@@ -107,9 +96,9 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs, sequ
 
         smoother_solution = gibbs(500)
         np.testing.assert_allclose(smoother_solution[:, 100:].mean(1), kalman_smoothing_solution.mean, rtol=1e-2)
-    elif sequential:
+    elif ffbs:
         smoother = jax.vmap(lambda k: sequential_smoothing(T, k, transition_model, observation_model, initial_model,
-                                                           NullPotentialModel(), N=N, M=N ))
+                                                           NullPotentialModel(), N=N, M=N))
 
         (smoother_solutions, _), ells = smoother(jax.random.split(rng_key, 10))
         np.testing.assert_allclose(ells[:, -1].mean() - ells[:, -1].var() / 2,
@@ -141,5 +130,3 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs, sequ
     plt.legend()
     plt.suptitle(f"FFBS-{ffbs}-Gibbs-{conditional}, dim_x-{dim_x}, dim_y-{dim_y}")
     plt.show()
-
-

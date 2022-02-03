@@ -42,7 +42,7 @@ df["rs"] = rs
 colordict = {25: 1, 50: 2, 100: 3, 250: 4}
 
 sns.relplot(x=df["T"], y=df["Parallel"], col=df["rs"],
-            hue=df["N"], kind="scatter", legend=False,)
+            hue=df["N"], kind="scatter", legend=False, )
 
 plt.savefig("here.png")
 

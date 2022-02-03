@@ -27,7 +27,6 @@ from typing import Any, Callable, Tuple
 import chex
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import tree_map
 
 from parallel_ps.base import PyTree, DSMCState

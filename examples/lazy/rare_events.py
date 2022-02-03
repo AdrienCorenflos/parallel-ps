@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import tqdm
-from jax.experimental.host_callback import id_tap
 
 from examples.models.rare_events import InitialModel, TransitionKernel, PotentialKernel, InitPotentialKernel
 from parallel_ps.base import PyTree, DensityModel
@@ -39,7 +38,7 @@ chol0 = jnp.eye(D)
 phi = lambda x: x
 
 SVS = [0.2, 0.3, 0.4, 0.5]
-TS = [32,  64, 128, 256, 512]
+TS = [32, 64, 128, 256, 512]
 NS = [25, 50, 100, 250, 500, 1_000, 2_500, 5_000]
 # Other config
 
@@ -104,7 +103,7 @@ def loop_body(i, op_key, sv, bound, T, n_particles):
             print(f"\rIteration {j + 1}/{B}", end="", flush=True)
 
     ell, (trajs, _) = smc(op_key, bound, sv, T, n_particles)
-    return i+1, (integrand(trajs, sv), ell)
+    return i + 1, (integrand(trajs, sv), ell)
 
 
 @partial(jax.jit, backend=backend, static_argnums=(2, 3))
@@ -140,7 +139,6 @@ def run_experiment():
                 continue
 
             for i, sv in enumerate(tqdm.tqdm(SVS)):
-
                 log_weights_bound = -D * (math.log(sv) + 0.5 * math.log(2 * math.pi)) * np.ones((T - 1,))
                 log_weights_bound = np.insert(log_weights_bound, 0, -D * 0.5 * math.log(2 * math.pi))
 
@@ -152,6 +150,7 @@ def run_experiment():
                 variances[i, j, k] = test_res.var()
                 runtimes[i, j, k] = (toc - tic) / B
     return indices, means, variances, runtimes
+
 
 if __name__ == "__main__":
     res_indices, res_means, res_variances, res_runtimes = run_experiment()

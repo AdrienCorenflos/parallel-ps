@@ -14,11 +14,11 @@ from parallel_ps.base import NullPotentialModel, DensityModel, PyTree
 from parallel_ps.core.resampling import systematic
 from parallel_ps.parallel_smoother import smoothing
 from parallel_ps.sequential import smoothing as ffbs_smoothing
-# CONFIG
 from parallel_ps.utils import mvn_loglikelihood
 
-# from itertools import product
+# CONFIG
 
+DO_RUN = True
 backend = "gpu"
 device = jax.devices(backend)[1]
 n_smoothers = 100  # number of  times we run the smoother on the dataset
@@ -143,26 +143,26 @@ def experiment(ys, N):
     return np.mean(runtimes), scores
 
 
-shape = (len(Ts), len(Ns))
-runtime_means = np.empty(shape)
-batch_scores = np.empty(shape + (n_smoothers,))
+if DO_RUN:
+    shape = (len(Ts), len(Ns))
+    runtime_means = np.empty(shape)
+    batch_scores = np.empty(shape + (n_smoothers,))
 
-indices = np.recarray(shape,
-                      dtype=[("T", int), ("N", int)])
+    indices = np.recarray(shape,
+                          dtype=[("T", int), ("N", int)])
 
-xs, ys = get_data(mu, rho, sigma, max(Ts))
+    xs, ys = get_data(mu, rho, sigma, max(Ts))
 
-for (m, T_), (n, N)in product(
-        *map(enumerate, [Ts, Ns]), total=reduce(mul, shape)):
+    for (m, T_), (n, N) in product(
+            *map(enumerate, [Ts, Ns]), total=reduce(mul, shape)):
+        runtime, batch_score = experiment(ys[:T_], N)
+        runtime_means[m, n] = runtime
+        batch_scores[m, n, :] = batch_score
+        indices[m, n]["T"] = T_
+        indices[m, n]["N"] = N
 
-    runtime, batch_score = experiment(ys[:T_], N)
-    runtime_means[m, n] = runtime
-    batch_scores[m, n, :] = batch_score
-    indices[m, n]["T"] = T_
-    indices[m, n]["N"] = N
-
-os.makedirs("./output", exist_ok=True)
-np.savez(f"./output/cox-{use_FFBS}-{use_conditional_proposal}-{backend}",
-         indices=indices,
-         runtime_means=runtime_means,
-         batch_scores=batch_scores)
+    os.makedirs("./output", exist_ok=True)
+    np.savez(f"./output/cox-{use_FFBS}-{use_conditional_proposal}-{backend}",
+             indices=indices,
+             runtime_means=runtime_means,
+             batch_scores=batch_scores)

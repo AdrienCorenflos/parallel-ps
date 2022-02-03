@@ -1,28 +1,26 @@
 # Parallel particle smoothing
 
-This is the companion code to the paper xxx, by Adrien Corenflos, Nicolas Chopin, and Simo Särkkä. Pre-print is
-available at xxx.
+This is the companion code to the paper "De-Sequentialized Monte Carlo: a parallel-in-time particle smoother", by Adrien
+Corenflos, Nicolas Chopin, and Simo Särkkä. Pre-print is available on ArXiv.
 
 ## Quick description
 
 This package implements parallel-in-time smoothing methods for state-space methods. By this we mean that the runtime of
-the algorithm on parallel hardware (such as GPU) will be proportional to log(T) where T is the number of required
+the algorithm on parallel hardware (such as GPU) will be proportional to $log(T)$ where $T$ is the number of required
 time steps.
 
 The way we achieve this is by re-phrasing the smoothing problem as a divide-and-conquer operation over partial
 smoothing. In order to do inference in this now nested structure, we require that one is able to sample from proposals
-marginals `q_t` at each time t. This can either be done independently
-(in O(log(1)) parallel runtime), or pathwise (in O(log(T)) parallel runtime) if one is using Gaussian smoothing
-approximations.
+independent marginals `q_t` at each time t. This can be done for example by computing a parallel-in-time approximate
+LGSSM smoother.
 
 We moreover implement a parallel-in-time particle Gibbs sampler. Because our sampled smoothing trajectories suffer
 degeneracy uniformly across time, we do not need a backward sampling pass to prevent degeneracy in time for efficient
 rejuvenation.
 
-Finally, the library is written in JAX and therefore supports (biased) gradient backpropagation natively, which we make
-use of to design efficient (albeit suboptimal) proposal distributions.
+Finally, we implement a lazy resampling scheme to improve the sampling capabilities of our algorithm.
 
-For more details, we refer to our article xxx.
+For more details, we refer to our article.
 
 ## Installation
 
@@ -69,4 +67,4 @@ corenflos[at]aalto[dot]fi.
 
 ## How to cite
 
-If you use our code/build on our work, please cite us! The correct bibtex entry is included in the repository.
+If you like and use our code/build on our work, please cite us!

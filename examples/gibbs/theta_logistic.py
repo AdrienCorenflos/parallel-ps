@@ -345,4 +345,5 @@ def plot_experiment():
 
 if DO_RUN:
     run_experiment()
+
 plot_experiment()
