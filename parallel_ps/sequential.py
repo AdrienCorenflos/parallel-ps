@@ -30,7 +30,7 @@ from jax.scipy.special import logsumexp
 
 from parallel_ps.base import DensityModel, UnivariatePotentialModel, BivariatePotentialModel, DSMCState, \
     NullPotentialModel, ConditionalDensityModel, split_batched_and_static_params, rejoin_batched_and_static_params
-from parallel_ps.core.resampling import multinomial
+from parallel_ps.core.resampling import multinomial, systematic
 
 
 def smoothing(T,
@@ -130,7 +130,10 @@ def _filtering(T: int,
         weights = jnp.exp(curr_log_weights)
 
         op_sample_key, op_resample_key = jax.random.split(op_key)
-        idx = _conditional_resample(op_resample_key, weights, N)
+        if curr_conditional is not None:
+            idx = _conditional_resample(op_resample_key, weights, N)
+        else:
+            idx = systematic(weights, op_resample_key, N)
         curr_particles = jax.tree_map(lambda x: x[idx], curr_particles)
 
         proposed_particles = Mt_sampler(op_sample_key, curr_particles, Mt_params_t)

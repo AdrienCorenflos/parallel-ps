@@ -28,9 +28,10 @@ mu = 0.
 rho = 0.9
 sigma = 0.5
 
-Ts = np.logspace(5, 12, num=7, base=2, dtype=int)
-Ns = np.logspace(1, 3, base=10, num=7, dtype=int)
-use_FFBS = True
+Ts = [2 ** k for k in range(5, 10)]
+Ns = [25, 50, 100, 250, 500, 1_000]
+
+use_FFBS = False
 use_conditional_proposal = False
 
 # data seed

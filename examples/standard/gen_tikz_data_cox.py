@@ -1,8 +1,7 @@
 import numpy as np
-from matplotlib import pyplot as plt
-from scipy import stats
-import seaborn as sns
 import pandas as pd
+import seaborn as sns
+from matplotlib import pyplot as plt
 
 ffbs_res = np.load("./output/cox-True-False-gpu.npz")
 parallel_stationary_res = np.load("./output/cox-False-False-gpu.npz")
@@ -57,35 +56,26 @@ ffbs_runtime_df.name = "Sequential"
 scores_df = pd.concat([stationary_scores_df, ffbs_scores_df], axis=1)
 scores_std = scores_df.groupby(level=[0, 1]).std()
 
+std_dev_ratio = scores_std["Parallel"] / scores_std["Sequential"]
+std_dev_ratio = std_dev_ratio.to_frame(name="ratio")
+
 runtime_df = pd.concat([stationary_runtime_df, ffbs_runtime_df], axis=1)
 runtime_mean = runtime_df.groupby(level=[0, 1]).mean()
 
-fig, axes = plt.subplots(ncols=2, figsize=(15, 6), sharex=True, sharey=True)
-sns.lineplot(data=scores_std.reset_index(), x="N", y="Parallel", hue="T", ax=axes[0])
-sns.lineplot(data=scores_std.reset_index(), x="N", y="Sequential", hue="T", ax=axes[1])
-axes[0].set_ylabel("Standard deviation")
-axes[1].set_ylabel("Standard deviation")
-axes[0].set_title("Parallel")
-axes[1].set_title("Sequential")
-axes[0].set_xscale("log")
-axes[1].set_xscale("log")
+df = pd.concat([std_dev_ratio, runtime_mean], axis=1).reset_index()
+df = df.rename(columns={"Parallel": "dSMC", "Sequential": "FFBS"})
+df.to_csv("./output/cox-results.csv", index=False)
 
 
-plt.show()
-
-fig, axes = plt.subplots(ncols=2, figsize=(15, 6), sharex=True, sharey=True)
-sns.lineplot(data=scores_std.reset_index(), x="T", y="Parallel", hue="N", ax=axes[0])
-sns.lineplot(data=scores_std.reset_index(), x="T", y="Sequential", hue="N", ax=axes[1])
-axes[0].set_ylabel("Standard deviation")
-axes[1].set_ylabel("Standard deviation")
-axes[0].set_title("Parallel")
-axes[1].set_title("Sequential")
-axes[0].set_xscale("log")
-axes[1].set_xscale("log")
+runtime_mean = runtime_df.groupby(level=[0, 1]).mean()
+fig, ax = plt.subplots(figsize=(15, 6))
+sns.lineplot(data=std_dev_ratio.reset_index(), y=0, x="N", hue="T", ax=ax)
+ax.set_ylabel("$\sigma_{dSMC} / \sigma_{SMC}$")
+ax.set_title("Parallel")
 
 plt.show()
 
-fig, axes = plt.subplots(ncols=2, figsize=(15, 6), sharex=True, sharey=True)
+_, axes = plt.subplots(ncols=2, figsize=(15, 6), sharex=True, sharey=True)
 sns.lineplot(data=runtime_df.reset_index(), x="T", y="Parallel", hue="N", ax=axes[0])
 sns.lineplot(data=runtime_df.reset_index(), x="T", y="Sequential", hue="N", ax=axes[1])
 axes[0].set_ylabel("Mean runtime")
@@ -99,39 +89,3 @@ axes[1].set_yscale("log")
 
 plt.show()
 
-
-# stationary_stats = stats.describe(stationary_scores, axis=-1)
-# print(stationary_stats.mean)
-# print(stationary_stats.variance ** 0.5)
-#
-# print("FFBS stats")
-# ffbs_stats = stats.describe(ffbs_scores, axis=-1)
-#
-# print(ffbs_stats.mean)
-# print(ffbs_stats.variance ** 0.5)
-
-
-
-#
-# # parallel_stddev = parallel_res["ps_ell_stds"]
-#
-# print(parallel_index["N"])
-# print(parallel_index["N"].shape)
-# print(parallel_runtime.shape)
-#
-# T_index_shape = parallel_index["T"][..., -1].shape
-# plt.scatter(np.log2(parallel_index["T"][..., -1]) + 0.1 * np.random.randn(*T_index_shape),
-#             parallel_runtime / ffbs_runtime, c=parallel_index["N"][..., -1], alpha=0.5)
-# plt.yscale("log")
-# plt.xticks()
-# plt.show()
-#
-# fig, ax = plt.subplots()
-#
-# scatter = ax.scatter(np.log2(parallel_index["T"][..., -1]) + 0.1 * np.random.randn(*T_index_shape),
-#                      ffbs_stddev / parallel_stddev, alpha=0.5, c=parallel_index["dim_y"][..., -1])
-# legend1 = ax.legend(*scatter.legend_elements(),
-#                     loc="lower left", title="dim_y")
-# ax.add_artist(legend1)
-# plt.legend()
-# plt.show()

@@ -141,3 +141,5 @@ def test_smoother(dim_x, dim_y, T, np_seed, N, jax_seed, conditional, ffbs, sequ
     plt.legend()
     plt.suptitle(f"FFBS-{ffbs}-Gibbs-{conditional}, dim_x-{dim_x}, dim_y-{dim_y}")
     plt.show()
+
+
