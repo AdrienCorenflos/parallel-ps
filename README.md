@@ -1,7 +1,7 @@
 # Parallel particle smoothing
 
 This is the companion code to the paper "De-Sequentialized Monte Carlo: a parallel-in-time particle smoother", by Adrien
-Corenflos, Nicolas Chopin, and Simo Särkkä. Pre-print is available on ArXiv.
+Corenflos, Nicolas Chopin, and Simo Särkkä. Pre-print is available on ArXiv at https://arxiv.org/abs/2202.02264.
 
 ## Quick description
 
