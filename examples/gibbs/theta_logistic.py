@@ -19,8 +19,9 @@ from parsmooth.utils import MVNormalParameters
 from statsmodels.tsa.stattools import acf
 
 from examples.models.theta_logistic import transition_function, observation_function, ObservationPotential, \
-    TransitionKernel, InitialModel, InitObservationPotential
-from parallel_ps.base import PyTree, UnivariatePotentialModel, GaussianDensity
+    TransitionKernel, InitialModel, InitObservationPotential, LocallyOptimalTransitionKernel, \
+    LocallyOptimalObservationKernel
+from parallel_ps.base import PyTree, UnivariatePotentialModel, GaussianDensity, NullPotentialModel
 from parallel_ps.core.resampling import multinomial
 from parallel_ps.parallel_smoother import smoothing as particle_smoothing
 from parallel_ps.sequential import smoothing
@@ -36,13 +37,13 @@ backend = "gpu"
 DO_RUN = True
 # Particle smoother config
 
-N = 50  # Number of particles
+N = 25  # Number of particles
 B = 10 ** 5  # Number of time steps in the chain
 BURN_IN = B // 10  # Discarded number of steps for stats
 KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
 KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
-use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs
+use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs.
 use_sequential = False  # use the sequential algorithm instead of the parallel one.
 
 # Data
@@ -167,6 +168,15 @@ def cdsmc(key, x_prec, y_prec, tau0, tau1, tau2, n_iter, smoother_init=None, tra
         qt_sample_key, csmc_key = jax.random.split(sample_key)
         if traj is None:
             traj = q_t.sample(qt_sample_key, 1)[:, 0]
+        if use_kalman:
+            transition_kernel = LocallyOptimalTransitionKernel(tau0, tau1, tau2, chol_Q, chol_R, data[1:])
+            gen_observation_potential = LocallyOptimalObservationKernel(tau0, tau1, tau2, chol_Q, chol_R, data[1:])
+            gain = q_2 / (q_2 + r_2)
+            locally_optimal_m0 = m0 + gain * (data[0] - m0)
+            locally_optimal_P0 = chol_P0 @ chol_P0.T - gain ** 2 * chol_P0 @ chol_P0.T
+            initial_model = InitialModel(locally_optimal_m0, locally_optimal_P0)
+            init_observation_potential = NullPotentialModel()
+
         (origins, next_trajectory), _ = smoothing(T, csmc_key, transition_kernel,
                                                   gen_observation_potential, initial_model,
                                                   init_observation_potential, N, conditional_trajectory=traj)
@@ -205,7 +215,7 @@ def sample_params(key, tau0, tau1, tau2, sampled_traj):
     log_prob = 0.5 * x_prec * (jnp.sum(delta_x ** 2) - jnp.sum(new_deltaX ** 2))
     log_prob = log_prob + tau2_prior.log_prob(tau2_prop) - tau2_prior.log_prob(tau2)
     tau2 = jax.lax.cond(jnp.log(u) < log_prob, lambda _: tau2_prop, lambda _: tau2, None)
-    # return x_prec, y_prec, 1., 1., tau2
+
     # Jointly sample from tau1 and tau2
     features = jnp.stack([jnp.ones((T - 1,)), -jnp.exp(tau2 * xs[:-1])], axis=-1)
     beta_ols, _, rank, singular = jnp.linalg.lstsq(features, diff_xs)  # least squares solution
