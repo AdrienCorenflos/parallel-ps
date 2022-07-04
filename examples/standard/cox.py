@@ -24,6 +24,7 @@ DO_RUN = True
 backend = "gpu"
 device = jax.devices(backend)[0]
 n_smoothers = 100  # number of  times we run the smoother on the dataset
+B = 25  # number of different datasets considered
 
 # SSM Config
 mu = 0.
@@ -147,21 +148,25 @@ def experiment(ys, N):
 
 if DO_RUN:
     shape = (len(Ts), len(Ns))
-    runtime_means = np.empty(shape)
-    batch_scores = np.empty(shape + (n_smoothers,))
+    runtime_means = np.empty(shape + (B,))
+    batch_scores = np.empty(shape + (n_smoothers, B))
 
     indices = np.recarray(shape,
                           dtype=[("T", int), ("N", int)])
 
-    xs, ys = get_data(mu, rho, sigma, max(Ts))
+    datasets = []
+    for b in range(B):
+        _, ys = get_data(mu, rho, sigma, max(Ts))
+        datasets.append(ys)
 
-    for (m, T_), (n, N) in product(
-            *map(enumerate, [Ts, Ns]), total=reduce(mul, shape)):
-        runtime, batch_score = experiment(ys[:T_], N)
-        runtime_means[m, n] = runtime
-        batch_scores[m, n, :] = batch_score
+    for (m, T_), (n, N), (b, ys) in product(*map(enumerate, [Ts, Ns, datasets]), total=reduce(mul, shape) * B):
+
         indices[m, n]["T"] = T_
         indices[m, n]["N"] = N
+
+        runtime, batch_score = experiment(ys[:T_], N)
+        runtime_means[m, n, b] = runtime
+        batch_scores[m, n, :, b] = batch_score
 
     os.makedirs("./output", exist_ok=True)
     np.savez(f"./output/cox-{use_FFBS}-{use_conditional_proposal}-{backend}",

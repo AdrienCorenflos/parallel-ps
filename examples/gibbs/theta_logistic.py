@@ -37,14 +37,14 @@ backend = "gpu"
 DO_RUN = True
 # Particle smoother config
 
-N = 25  # Number of particles
+N = 150  # Number of particles
 B = 10 ** 5  # Number of time steps in the chain
 BURN_IN = B // 10  # Discarded number of steps for stats
 KALMAN_N_ITER = 1  # Number of iterations to find new proposal q_t during the sampling process
 KALMAN_N_ITER_INIT = 25  # Number of iterations to find initial proposal q_t to start the sampling process
 
-use_kalman = True  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs.
-use_sequential = False  # use the sequential algorithm instead of the parallel one.
+use_kalman = False  # use an iterated Kalman smoother to sample the proposals, otherwise, just Gaussian around obs.
+use_sequential = True  # use the sequential algorithm instead of the parallel one.
 
 # Data
 data = np.genfromtxt('../data/nutria.txt', delimiter=',').reshape(-1, 1)
