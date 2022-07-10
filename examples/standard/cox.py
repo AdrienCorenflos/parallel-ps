@@ -22,16 +22,16 @@ from parallel_ps.utils import mvn_loglikelihood
 
 DO_RUN = True
 backend = "gpu"
-device = jax.devices(backend)[0]
+device = jax.devices(backend)[1]
 n_smoothers = 100  # number of  times we run the smoother on the dataset
-B = 25  # number of different datasets considered
+B = 50  # number of different datasets considered
 
 # SSM Config
 mu = 0.
 rho = 0.9
 sigma = 0.5
 
-Ts = [2 ** k for k in range(5, 10)]
+Ts = [2 ** k for k in range(5, 11)]
 Ns = [25, 50, 100, 250, 500, 1_000]
 
 use_FFBS = False
@@ -159,6 +159,8 @@ if DO_RUN:
         _, ys = get_data(mu, rho, sigma, max(Ts))
         datasets.append(ys)
 
+    os.makedirs("./output", exist_ok=True)
+
     for (m, T_), (n, N), (b, ys) in product(*map(enumerate, [Ts, Ns, datasets]), total=reduce(mul, shape) * B):
 
         indices[m, n]["T"] = T_
@@ -168,7 +170,11 @@ if DO_RUN:
         runtime_means[m, n, b] = runtime
         batch_scores[m, n, :, b] = batch_score
 
-    os.makedirs("./output", exist_ok=True)
+        np.savez(f"./output/cox-{use_FFBS}-{use_conditional_proposal}-{backend}",
+                 indices=indices,
+                 runtime_means=runtime_means,
+                 batch_scores=batch_scores)
+
     np.savez(f"./output/cox-{use_FFBS}-{use_conditional_proposal}-{backend}",
              indices=indices,
              runtime_means=runtime_means,

@@ -2,58 +2,53 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import tikzplotlib as tikzplotlib
 
-ffbs_res = np.load("./output/result_degeneracy-True-gpu.npz")
-parallel_res = np.load("./output/result_degeneracy-False-gpu.npz")
+ffbs_res = np.load("./output/cox-True-False-gpu.npz")
+parallel_res = np.load("./output/cox-False-False-gpu.npz")
 
 ffbs_index = ffbs_res["indices"]
 parallel_index = parallel_res["indices"]
 
-ffbs_ells = ffbs_res["ells"]
-parallel_ells = parallel_res["ells"]
+ffbs_ells = ffbs_res["batch_scores"]
+parallel_ells = parallel_res["batch_scores"]
 
-rs = np.tile(ffbs_res["rs"][:], parallel_index["T"].shape + (1,))
-kf_ells = ffbs_res["kf_ells"]
+ffbs_ells_std = ffbs_ells.std(axis=-2)
+parallel_ells_std = parallel_ells.std(axis=-2)
 
-ffbs_ells_diff = ffbs_ells - kf_ells[..., None]
-parallel_ells_diff = parallel_ells - kf_ells[..., None]
+ratio = parallel_ells_std / ffbs_ells_std
 
-ffbs_ells_std = ffbs_ells_diff.std(axis=-1)
-parallel_ells_std = parallel_ells_diff.std(axis=-1)
+flat_T_index = np.ravel(parallel_index["T"])
+flat_N_index = np.ravel(parallel_index["N"])
 
-T = np.tile(parallel_index["T"], (1, 1, rs.shape[-1]))
-N = np.tile(parallel_index["N"], (1, 1, rs.shape[-1]))
+degeneracy_data = list(map(np.ravel, [parallel_index["T"],
+                                    parallel_index["N"],
+                                    ]))
+flat_ratio = ratio.reshape(degeneracy_data[0].shape + (-1,))
 
-T, N, ffbs_ells_std, parallel_ells_std, kf_ells, rs = list(map(np.ravel, [T,
-                                                                          N,
-                                                                          ffbs_ells_std,
-                                                                          parallel_ells_std,
-                                                                          kf_ells,
-                                                                          rs]))
+degeneracy_df_index = pd.MultiIndex.from_arrays([flat_T_index, flat_N_index], names=["T", "N"])
+degeneracy_df = pd.DataFrame(index = degeneracy_df_index, data=flat_ratio)
+degeneracy_df = degeneracy_df.stack()
+degeneracy_df.name = "ratio"
+degeneracy_df.index = degeneracy_df.index.set_names('batch', level=2)
 
-df = pd.DataFrame(columns=["T", "N", "rs" "Sequential", "Parallel", "kf"])
-df["T"] = T
-df["N"] = N
+degeneracy_df = degeneracy_df.reset_index()
 
-df["Sequential"] = ffbs_ells_std
-df["Parallel"] = parallel_ells_std
-df["rs"] = rs
 
-colordict = {25: 1, 50: 2, 100: 3, 250: 4}
+fig, ax = plt.subplots(figsize=(12, 6))
 
-sns.relplot(x=df["T"], y=df["Parallel"], col=df["rs"],
-            hue=df["N"], kind="scatter", legend=False, )
+colordict = {32: 1, 64: 2, 128: 3, 256: 4, 512: 5}
 
-plt.savefig("here.png")
+sns.lineplot(x=degeneracy_df["N"], y=degeneracy_df["ratio"], hue=degeneracy_df["T"].map(colordict), marker="o", markersize=7,
+             ax=ax, ci=90)
 
-sns.relplot(x=df["rs"], y=df["Sequential"], col=df["rs"],
-            legend=False, hue=df["N"], kind="scatter")
+ax.set_xscale("log", base=2)
+ax.set_ylabel("ratio")
+plt.show()
 
-plt.savefig("here.png")
 
-#
-# ax.set_xscale("log", base=2)
-# ax.set_yscale("log", base=10)
-# ax.set_ylabel("Runtime (s)")
-
-# tikzplotlib.save("./output/degeneracy.tex")
+tikzplotlib.save("./output/degeneracy.tex")
