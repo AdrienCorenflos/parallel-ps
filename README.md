@@ -2,6 +2,7 @@
 
 This is the companion code to the paper "De-Sequentialized Monte Carlo: a parallel-in-time particle smoother", by Adrien
 Corenflos, Nicolas Chopin, and Simo Särkkä. Pre-print is available on ArXiv at https://arxiv.org/abs/2202.02264.
+The full paper is published at JMLR https://www.jmlr.org/papers/v23/22-0140.html. Please cite this version.
 
 ## Quick description
 
