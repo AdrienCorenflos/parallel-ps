@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import chex
 import numpy as np
 import pytest
@@ -7,11 +9,12 @@ from parallel_ps.base import rejoin_batched_and_static_params, split_batched_and
 
 
 def test_split_rejoin():
-    batched = dict(x=True, y=False)
-    params = dict(x=np.random.random(10), y=np.random.random(5))
+    param_struct = namedtuple("batched", ["x", "y"])
+    batched = param_struct(x=True, y=False)
+    params = param_struct(x=np.random.random(10), y=np.random.random(5))
     batched_params, static_params = split_batched_and_static_params(params, batched)
-    rejoined_params = rejoin_batched_and_static_params(batched, batched_params, static_params)
-    chex.assert_tree_all_close(params, rejoined_params)
+    rejoined_params = rejoin_batched_and_static_params(batched_params, static_params, batched)
+    chex.assert_trees_all_close(params, rejoined_params)
 
 
 def test_normalize():

@@ -26,15 +26,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.config import config
 
 from parallel_ps.core import dc_map
 
 
 @pytest.fixture(scope="session", autouse=True)
 def pytest_config():
-    config.update("jax_enable_x64", True)
-    config.update("jax_platform_name", "cpu")
+    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_platform_name", "cpu")
 
 
 @pytest.mark.parametrize("np_seed", [42, 123, 666])

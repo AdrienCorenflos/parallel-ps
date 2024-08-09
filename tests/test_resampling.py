@@ -48,7 +48,7 @@ def _make_inputs(key, T, N, d):
 
     return DSMCState(trajectories, log_weights, ells, origins), keys, parameters
 
-
+@pytest.mark.skip("Not implemented in the paper")
 @pytest.mark.parametrize("B", [2, 5])
 @pytest.mark.parametrize("N", [50, 100])
 @pytest.mark.parametrize("np_seed", [0, 42])

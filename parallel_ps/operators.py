@@ -92,7 +92,7 @@ def operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Call
                            trajectories_b, origins_b, ells_b, log_weights_b, keys_b, params_b)
 
 
-@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6), donate_argnums=(0, 1))
+@partial(jax.jit, static_argnums=(2, 3,), donate_argnums=(0, 1))
 def lazy_operator(inputs_a: _INPUTS_TYPE, inputs_b: _INPUTS_TYPE, log_weight_fn: Callable[[PyTree, PyTree, Any], float],
                   n_samples: int):
     """

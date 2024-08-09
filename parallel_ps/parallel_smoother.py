@@ -95,7 +95,7 @@ def smoothing(key: chex.PRNGKey, qt: DensityModel, nut: UnivariatePotentialModel
                              G0.log_potential, G0.parameters,
                              log_weights_bounds, N, qt.T)
 
-    static_argnums = 1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 18, 19, 21, 22
+    static_argnums = 1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 18, 19, 21
     smoothing_fun = jax.jit(_smoothing, static_argnums=static_argnums)
 
     return smoothing_fun(key,

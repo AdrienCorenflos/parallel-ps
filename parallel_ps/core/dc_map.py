@@ -66,7 +66,7 @@ def dc_map(elems: PyTree, operator: Callable[[PyTree, PyTree], PyTree]) -> PyTre
     combined_elems: PyTree
         The result of the operator being applied to the data in a divide and conquer manner.
     """
-    return jax.jit(_dc_map, static_argnums=(1, 2))(elems, operator)
+    return jax.jit(_dc_map, static_argnums=(1,))(elems, operator)
 
 
 def _dc_map(elems, operator):
